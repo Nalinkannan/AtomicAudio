@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+mkdir -p "$ROOT/build/dsp"
+
+# The DSP plugin PipeWire loads, then the app beside it.
+cd "$ROOT/build/dsp"
+qmake6 "$ROOT/dsp/dsp.pro"
+make -j"$(nproc)"
+
+cd "$ROOT/build"
+qmake6 "$ROOT/atomicaudio.pro"
+make -j"$(nproc)"
+
+echo "Built $ROOT/build/atomicaudio and $ROOT/build/dsp/atomicaudio.so"

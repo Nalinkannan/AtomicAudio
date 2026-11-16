@@ -1,0 +1,12 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="Main.qml">Main.qml</file>
+        <file alias="AppIcon.qml">AppIcon.qml</file>
+        <file alias="ModeTile.qml">ModeTile.qml</file>
+        <file alias="EffectRow.qml">EffectRow.qml</file>
+        <file alias="EqGraph.qml">EqGraph.qml</file>
+        <file alias="HelpOverlay.qml">HelpOverlay.qml</file>
+        <file alias="PowerButton.qml">PowerButton.qml</file>
+        <file alias="i18n/en.json">i18n/en.json</file>
+    </qresource>
+</RCC>
