@@ -31,9 +31,10 @@ int main(int argc, char *argv[]) {
     app.setApplicationVersion(APP_VERSION);
 
     // Matches the window to atomicaudio.desktop, so the compositor (Wayland
-    // app_id) and the launcher pick up the installed icon.
+    // app_id) and the launcher pick up the installed icon; the built-in copy
+    // covers running from the build directory.
     app.setDesktopFileName("atomicaudio");
-    app.setWindowIcon(QIcon::fromTheme("atomicaudio"));
+    app.setWindowIcon(QIcon::fromTheme("atomicaudio", QIcon(":/atomicaudio.svg")));
 
     QQuickStyle::setStyle("Material");
 

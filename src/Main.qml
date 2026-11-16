@@ -97,12 +97,13 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 spacing: 14
 
-                AppIcon {
-                    name: "atom"
-                    width: 34
-                    height: 34
-                    stroke: 1.8
-                    color: win.accent
+                Image {
+                    source: "qrc:/atomicaudio.svg"
+                    sourceSize: Qt.size(96, 96)
+                    Layout.preferredWidth: 38
+                    Layout.preferredHeight: 38
+                    smooth: true
+                    mipmap: true
                 }
                 ColumnLayout {
                     spacing: 0

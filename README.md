@@ -54,7 +54,7 @@ The same measurement with Atomic Audio on (Dynamic mode): the 630 Hz peak is
 - Linux with **PipeWire** and **WirePlumber 0.5 or newer** (for smart
   filters; check with `wireplumber --version`)
 - `pactl` (from libpulse / pulseaudio-utils) and `systemd` user services
-- Qt 6.5+ to build (qt6-base, qt6-declarative)
+- Qt 6.5+ to build (qt6-base, qt6-declarative), and qt6-svg to show the icon
 
 ## Install
 

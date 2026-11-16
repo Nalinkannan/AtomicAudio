@@ -7,6 +7,7 @@
         <file alias="EqGraph.qml">EqGraph.qml</file>
         <file alias="HelpOverlay.qml">HelpOverlay.qml</file>
         <file alias="PowerButton.qml">PowerButton.qml</file>
+        <file alias="atomicaudio.svg">../pkgbuild/atomicaudio.svg</file>
         <file alias="i18n/en.json">i18n/en.json</file>
     </qresource>
 </RCC>
