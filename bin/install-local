@@ -1,0 +1,24 @@
+#!/bin/sh
+# Installs into ~/.local without root: the app, its DSP plugin, the launcher
+# entry and the icon. `atomicaudio on` then writes a user service that runs it.
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+PREFIX="${PREFIX:-$HOME/.local}"
+
+"$ROOT/bin/build"
+cd "$ROOT"
+
+install -Dm755 build/atomicaudio "$PREFIX/bin/atomicaudio"
+install -Dm755 build/dsp/atomicaudio.so "$PREFIX/lib/ladspa/atomicaudio.so"
+install -Dm644 pkgbuild/atomicaudio.svg "$PREFIX/share/icons/hicolor/scalable/apps/atomicaudio.svg"
+mkdir -p "$PREFIX/share/applications"
+sed "s|^Exec=atomicaudio|Exec=$PREFIX/bin/atomicaudio|" pkgbuild/atomicaudio.desktop \
+    > "$PREFIX/share/applications/atomicaudio.desktop"
+
+# A running engine keeps the old binary until it restarts.
+if systemctl --user is-active --quiet atomicaudio.service 2>/dev/null; then
+    systemctl --user restart atomicaudio.service
+fi
+
+echo "Installed to $PREFIX. Turn it on with: atomicaudio on"

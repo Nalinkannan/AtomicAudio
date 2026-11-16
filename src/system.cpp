@@ -38,9 +38,12 @@ QString pluginPath() {
     const QString overridden = qEnvironmentVariable("ATOMICAUDIO_PLUGIN");
     if (!overridden.isEmpty())
         return overridden;
-    const QString beside = QCoreApplication::applicationDirPath() + "/dsp/atomicaudio.so";
-    if (QFileInfo::exists(beside))
-        return beside;
+    // A development build keeps it in build/dsp; an install keeps it in
+    // <prefix>/lib/ladspa beside <prefix>/bin, whether that's /usr or ~/.local.
+    const QString dir = QCoreApplication::applicationDirPath();
+    for (const QString &candidate : {dir + "/dsp/atomicaudio.so", dir + "/../lib/ladspa/atomicaudio.so"})
+        if (QFileInfo::exists(candidate))
+            return QFileInfo(candidate).canonicalFilePath();
     return "/usr/lib/ladspa/atomicaudio.so";
 }
 

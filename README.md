@@ -32,14 +32,21 @@ through 10–20 dB louder.
 ## Install
 
 ```sh
-bin/install          # builds and installs the Arch package (asks for sudo)
+bin/install-local    # no sudo: installs into ~/.local
 atomicaudio on       # starts the engine now and at every login
 ```
+
+Or install it as an Arch package with `bin/install` in a regular terminal
+(it asks for your sudo password, which Claude Code's `!` prefix can't pass).
 
 Then open **Atomic Audio** from the launcher (Super + Space), or run
 `atomicaudio tui` in a terminal.
 
-To remove it: `atomicaudio off`, then `sudo pacman -R atomicaudio`.
+To remove it: `atomicaudio off`, then delete `~/.local/bin/atomicaudio`,
+`~/.local/lib/ladspa/atomicaudio.so`,
+`~/.local/share/applications/atomicaudio.desktop` and
+`~/.config/systemd/user/atomicaudio.service` (or `sudo pacman -R atomicaudio`
+for the package).
 
 ## Use it
 
