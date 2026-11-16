@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 
-// One of the sound modes along the top, like Dolby Access's.
+// One of the sound modes along the top.
 AbstractButton {
     id: tile
     property string glyph

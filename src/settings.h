@@ -22,8 +22,8 @@ struct Amounts {
     static const QStringList &keys();
 };
 
-// One sound setup. Speakers and headphones each keep their own, like Dolby
-// does, and the engine switches between them when you plug in. Custom mode
+// One sound setup. Speakers and headphones each keep their own, and the
+// engine switches between them when you plug in. Custom mode
 // and the custom EQ keep their own values, so trying a preset and coming
 // back never loses your mix.
 struct Profile {

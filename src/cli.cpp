@@ -35,7 +35,7 @@ int fail(const QString &message) {
 }
 
 void usage(QTextStream &s) {
-    s << "Atomic Audio — Dolby-style sound for your laptop speakers\n\n"
+    s << "Atomic Audio — full, wide, loud sound from your laptop speakers\n\n"
          "Usage:\n"
          "  atomicaudio [open]                 Open the window\n"
          "  atomicaudio tui                    Control it from the terminal\n"

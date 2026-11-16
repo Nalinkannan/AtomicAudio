@@ -104,8 +104,7 @@ bool Profile::operator==(const Profile &o) const {
            eqPreset == o.eqPreset && eq == o.eq && customEq == o.customEq;
 }
 
-// Modes follow Dolby Access's: what each one turns up is what that kind of
-// content needs from laptop speakers.
+// Each mode turns up what that kind of content needs from laptop speakers.
 const QList<Mode> &Settings::modes() {
     static const QList<Mode> list = {
         {"dynamic", {0.40, 0.30, 0.45, 0.55, 0.50}},

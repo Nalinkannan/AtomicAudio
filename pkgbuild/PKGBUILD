@@ -1,7 +1,7 @@
 pkgname=atomicaudio
 pkgver=0.2.0
 pkgrel=1
-pkgdesc='Dolby-style sound enhancement for laptop speakers on PipeWire'
+pkgdesc='Full, wide, loud sound from laptop speakers on PipeWire'
 arch=('x86_64' 'aarch64')
 license=('MIT')
 depends=('qt6-base' 'qt6-declarative' 'qt6-svg' 'qt6-wayland' 'pipewire' 'wireplumber' 'libpulse')

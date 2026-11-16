@@ -4,18 +4,17 @@
 
 <h1 align="center">Atomic Audio</h1>
 
-<p align="center"><strong>Dolby Atmos–style sound for laptop speakers on Linux.</strong></p>
+<p align="center"><strong>Full, wide, loud sound from laptop speakers on Linux.</strong></p>
 
 ![Atomic Audio](docs/screenshot.png)
 
-Windows laptops ship with Dolby Atmos or a vendor equivalent that makes small
-speakers sound full, wide and loud. Linux plays the same speakers bare, so
-they sound thin and boxy. Atomic Audio adds that processing back: a PipeWire
-filter in front of your built-in speakers, with a window, a terminal UI and a
-command line to control it.
+Laptop speakers are tiny, and played as they are they sound thin and boxy.
+Atomic Audio is the processing that makes them sound full, wide and loud: a
+PipeWire filter in front of your built-in speakers, with a window, a terminal
+UI and a command line to control it.
 
-- **Modes** like Dolby's: Dynamic, Movie, Music, Game, Voice, and Custom,
-  which keeps your own mix.
+- **Modes** for what you're playing: Dynamic, Movie, Music, Game, Voice, and
+  Custom, which keeps your own mix.
 - **Speaker optimizer**: a correction curve measured for your laptop's
   speakers, with a gentle generic curve for laptops that haven't been
   measured yet.
@@ -312,6 +311,3 @@ Darius, MIT License; the tone curves and the electronic and rap genres) and
 from GStreamer's 10-band equalizer presets
 ([GstIirEqualizer10Bands.prs](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gst-plugins-good/gst/equalizer/GstIirEqualizer10Bands.prs),
 LGPL-2.1-or-later; the other genres).
-
-Dolby and Dolby Atmos are trademarks of Dolby Laboratories. Atomic Audio is
-an independent project, not affiliated with or endorsed by Dolby.

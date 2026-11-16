@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
 Name=Atomic Audio
-Comment=Dolby-style sound for your laptop speakers
+Comment=Full, wide, loud sound from your laptop speakers
 Exec=atomicaudio open
 Icon=atomicaudio
 Terminal=false
 Categories=AudioVideo;Audio;Settings;
-Keywords=sound;audio;equalizer;eq;dolby;atmos;speakers;bass;surround;
+Keywords=sound;audio;equalizer;eq;enhancer;speakers;bass;surround;loudness;
 StartupWMClass=atomicaudio

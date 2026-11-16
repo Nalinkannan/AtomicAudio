@@ -1,4 +1,4 @@
-// atomicaudio — Dolby-style sound enhancement for laptop speakers on PipeWire.
+// atomicaudio — full, wide, loud sound from laptop speakers on PipeWire.
 
 #include <QGuiApplication>
 #include <QIcon>
