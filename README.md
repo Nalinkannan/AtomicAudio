@@ -24,7 +24,10 @@ command line to control it.
 - **Volume-aware**: at low volume it gives back the bass and treble that
   hearing loses, so quiet listening doesn't sound thin.
 - **Ten-band equalizer** drawn over a live spectrum of what you hear, with
-  presets (Flat, Open, Rich, Focused) and a custom curve.
+  its own gentle presets (Flat, Open, Rich, Focused), a custom curve, and a
+  library of 21 more from open-source players under **More**: tone fixes
+  (Bass Boost, Treble Boost, Vocal Clarity, Podcast, Loudness Curve) and
+  genres from Ballad and Classical to Rock, Techno and Deep House.
 - **Separate speaker and headphone settings**, switched automatically when
   you plug in.
 - **One-key compare** with the original sound.
@@ -138,6 +141,7 @@ atomicaudio set bass 70              # surround, dialogue, bass, leveler, loudne
 atomicaudio set tuning off           # the speaker optimizer
 atomicaudio set speakers generic     # optimizer curve: auto, generic, rog-g14-2024
 atomicaudio eq rich                  # flat, open, rich, focused, custom
+atomicaudio eq list                  # every preset, the library's too (rock, deep-house, ...)
 atomicaudio eq 2 3 2 0 0 0 0 1 1 1   # or ten gains in dB, 31 Hz … 16 kHz
 atomicaudio bypass                   # toggle the original sound
 atomicaudio reset
@@ -297,6 +301,13 @@ you turn it on, pointing at itself. Installing replaces it.
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+The library equalizer presets are taken, as published, from
+[iQualize](https://github.com/dariuscorvus/iqualize) (Copyright © 2026
+Darius, MIT License; the tone curves and the electronic and rap genres) and
+from GStreamer's 10-band equalizer presets
+([GstIirEqualizer10Bands.prs](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gst-plugins-good/gst/equalizer/GstIirEqualizer10Bands.prs),
+LGPL-2.1-or-later; the other genres).
 
 Dolby and Dolby Atmos are trademarks of Dolby Laboratories. Atomic Audio is
 an independent project, not affiliated with or endorsed by Dolby.

@@ -45,8 +45,16 @@ ApplicationWindow {
         "custom": { icon: "custom", title: qsTr("Custom"), subtitle: qsTr("Your own mix") }
     })
     readonly property var eqInfo: ({
-        "flat": qsTr("Flat"), "open": qsTr("Open"), "rich": qsTr("Rich"), "focused": qsTr("Focused"), "custom": qsTr("Custom")
+        "flat": qsTr("Flat"), "open": qsTr("Open"), "rich": qsTr("Rich"), "focused": qsTr("Focused"), "custom": qsTr("Custom"),
+        "bass-boost": qsTr("Bass Boost"), "treble-boost": qsTr("Treble Boost"), "vocal-clarity": qsTr("Vocal Clarity"),
+        "podcast": qsTr("Podcast"), "loudness-curve": qsTr("Loudness Curve"),
+        "american-rap": qsTr("American Rap"), "ballad": qsTr("Ballad"), "classical": qsTr("Classical"),
+        "club": qsTr("Club"), "dance": qsTr("Dance"), "deep-house": qsTr("Deep House"), "german-rap": qsTr("German Rap"),
+        "hard-techno": qsTr("Hard Techno"), "minimal": qsTr("Minimal"), "party": qsTr("Party"), "pop": qsTr("Pop"),
+        "reggae": qsTr("Reggae"), "rock": qsTr("Rock"), "ska": qsTr("Ska"), "soft": qsTr("Soft"), "techno": qsTr("Techno")
     })
+    readonly property bool libraryEqPreset: backend.eqToneIds.indexOf(backend.eqPreset) >= 0
+                                            || backend.eqGenreIds.indexOf(backend.eqPreset) >= 0
 
     // Watch the spectrum only while the window is on screen.
     Binding { target: outputAnalyzer; property: "target"; value: backend.outputSink }
@@ -354,7 +362,9 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                 }
                                 Label {
-                                    text: qsTr("Drag the points · double-click to reset one · E for presets")
+                                    text: win.libraryEqPreset
+                                          ? qsTr("%1 from the preset library · drag the points to adjust").arg(win.eqInfo[backend.eqPreset])
+                                          : qsTr("Drag the points · double-click to reset one · E for presets")
                                     font.pixelSize: 11
                                     color: win.tint(win.fg, 0.5)
                                     elide: Text.ElideRight
@@ -363,27 +373,82 @@ ApplicationWindow {
                             }
                             Repeater {
                                 model: backend.eqPresetIds
-                                delegate: AbstractButton {
-                                    id: chip
-                                    readonly property bool current: backend.eqPreset === modelData
-                                    implicitWidth: chipLabel.implicitWidth + 24
-                                    implicitHeight: 30
-                                    hoverEnabled: true
-                                    focusPolicy: Qt.NoFocus
+                                delegate: Chip {
+                                    text: win.eqInfo[modelData]
+                                    current: backend.eqPreset === modelData
+                                    compact: win.width < 1000
                                     onClicked: backend.setEqPreset(modelData)
+                                }
+                            }
+                            // The library: tone fixes and genre curves from open-source players.
+                            Chip {
+                                id: libraryChip
+                                text: qsTr("More") + " ▾"
+                                current: win.libraryEqPreset
+                                compact: win.width < 1000
+                                onClicked: libraryPopup.visible ? libraryPopup.close() : libraryPopup.open()
+
+                                Popup {
+                                    id: libraryPopup
+                                    x: libraryChip.width - width
+                                    y: libraryChip.height + 6
+                                    width: 372
+                                    margins: 12
+                                    padding: 16
+                                    // Stays open while you try presets; a click outside closes it.
+                                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
                                     background: Rectangle {
-                                        radius: Math.min(15, theme.radius)
-                                        color: chip.current ? win.accent : chip.hovered ? win.tint(win.fg, 0.08) : "transparent"
-                                        border.color: chip.current ? win.accent : win.tint(win.fg, 0.14)
+                                        radius: theme.radius
+                                        color: theme.background
+                                        border.color: win.tint(win.fg, 0.16)
                                     }
-                                    contentItem: Label {
-                                        id: chipLabel
-                                        text: win.eqInfo[modelData]
-                                        horizontalAlignment: Text.AlignHCenter
-                                        verticalAlignment: Text.AlignVCenter
-                                        font.pixelSize: 12
-                                        font.weight: chip.current ? Font.DemiBold : Font.Normal
-                                        color: chip.current ? theme.accentForeground : win.tint(win.fg, 0.8)
+                                    contentItem: ColumnLayout {
+                                        spacing: 8
+                                        Label {
+                                            text: qsTr("Tone")
+                                            font.pixelSize: 11
+                                            font.weight: Font.DemiBold
+                                            color: win.tint(win.fg, 0.55)
+                                        }
+                                        Flow {
+                                            Layout.fillWidth: true
+                                            spacing: 6
+                                            Repeater {
+                                                model: backend.eqToneIds
+                                                delegate: Chip {
+                                                    text: win.eqInfo[modelData]
+                                                    current: backend.eqPreset === modelData
+                                                    onClicked: backend.setEqPreset(modelData)
+                                                }
+                                            }
+                                        }
+                                        Label {
+                                            text: qsTr("Genres")
+                                            topPadding: 6
+                                            font.pixelSize: 11
+                                            font.weight: Font.DemiBold
+                                            color: win.tint(win.fg, 0.55)
+                                        }
+                                        Flow {
+                                            Layout.fillWidth: true
+                                            spacing: 6
+                                            Repeater {
+                                                model: backend.eqGenreIds
+                                                delegate: Chip {
+                                                    text: win.eqInfo[modelData]
+                                                    current: backend.eqPreset === modelData
+                                                    onClicked: backend.setEqPreset(modelData)
+                                                }
+                                            }
+                                        }
+                                        Label {
+                                            text: qsTr("Curves from iQualize and GStreamer, as they publish them: bolder than ours.")
+                                            topPadding: 6
+                                            font.pixelSize: 11
+                                            color: win.tint(win.fg, 0.45)
+                                            wrapMode: Text.WordWrap
+                                            Layout.fillWidth: true
+                                        }
                                     }
                                 }
                             }

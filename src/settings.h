@@ -44,9 +44,14 @@ struct Mode {
     Amounts amounts;
 };
 
+// Atomic Audio's own curves are the chips over the equalizer; the library
+// curves (tone fixes and music genres) sit in the menu beside them.
+enum class EqGroup { House, Tone, Genre };
+
 struct EqPreset {
     QString id;
     std::array<double, atomic::EqBands> gains;
+    EqGroup group = EqGroup::House;
 };
 
 using Controls = std::array<float, atomic::ParamCount>;
@@ -68,6 +73,9 @@ public:
     static const QList<EqPreset> &eqPresets();
     static const Mode *findMode(const QString &id);
     static const EqPreset *findEqPreset(const QString &id);
+    // Preset ids in display order: one group's, or every preset then "custom".
+    static QStringList eqPresetIds(EqGroup group);
+    static QStringList allEqPresetIds();
     static Profile defaultProfile(bool forHeadphones);
 
     // Sets the effect amounts of a mode; "custom" brings back your own.

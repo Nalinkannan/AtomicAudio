@@ -117,14 +117,63 @@ const QList<Mode> &Settings::modes() {
     return list;
 }
 
+// Our own curves first, gentle enough to leave on all day. Then a library of
+// well-known curves from open-source players, kept as published; they're
+// bolder, the way those players ship them. Both libraries use the same ten
+// octave bands as ours (31 Hz … 16 kHz):
+//   - iQualize, Copyright (c) 2026 Darius, MIT License
+//     (https://github.com/dariuscorvus/iqualize, Sources/iQualize/EQModels.swift):
+//     the tone curves and the electronic and rap genres.
+//   - GStreamer's 10-band equalizer presets, LGPL-2.1-or-later
+//     (gst-plugins-good/gst/equalizer/GstIirEqualizer10Bands.prs): the other
+//     genres. Its bands sit about a tenth of an octave lower than ours.
 const QList<EqPreset> &Settings::eqPresets() {
+    using G = EqGroup;
     static const QList<EqPreset> list = {
         {"flat", {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
         {"open", {0, 0, 0, -0.5, -0.5, 0, 0.5, 1.5, 2.5, 3.0}},
         {"rich", {2.0, 3.0, 2.5, 1.0, 0, -0.5, 0, 0.5, 1.0, 1.0}},
         {"focused", {-2.0, -1.5, -1.0, 0, 1.0, 2.0, 2.5, 1.5, 0, -1.0}},
+
+        {"bass-boost", {10, 10, 8, 4, 0, 0, 0, 0, 0, 0}, G::Tone},
+        {"treble-boost", {0, 0, 0, 0, 0, 2, 4, 6, 8, 10}, G::Tone},
+        {"vocal-clarity", {-6, -6, -4, 0, 0, 6, 6, 4, 0, 0}, G::Tone},
+        {"podcast", {-8, -4, -2, 0, 2, 4, 6, 4, 2, 0}, G::Tone},
+        {"loudness-curve", {8, 6, 0, -2, -4, -2, 0, 2, 4, 6}, G::Tone},
+
+        {"american-rap", {10, 8, 4, 0, -2, -2, 2, 4, 6, 4}, G::Genre},
+        {"ballad", {4, 3.75, 2.5, 0, -4, -6, -3, 0, 2.5, 9}, G::Genre},
+        {"classical", {0, 0, 0, 0, 0, 0, -6, -7, -7, -9.5}, G::Genre},
+        {"club", {0, 0, 8, 6, 5.5, 5, 3, 0, 0, 0}, G::Genre},
+        {"dance", {9.6, 7, 2.5, 0, 0, -5.6, -7, -7, 0, 0}, G::Genre},
+        {"deep-house", {6, 10, 8, 2, -2, -4, -2, 0, 2, 4}, G::Genre},
+        {"german-rap", {6, 8, 6, 2, -2, 0, 4, 4, 2, 2}, G::Genre},
+        {"hard-techno", {10, 10, 6, 0, -4, -2, 2, 6, 8, 10}, G::Genre},
+        {"minimal", {4, 6, 4, 0, -2, -2, 0, 2, 4, 2}, G::Genre},
+        {"party", {7, 7, 0, 0, 0, 0, 0, 0, 7, 7}, G::Genre},
+        {"pop", {-1.6, 4.5, 7, 8, 5.6, 0, -2.5, -2, -1.6, -1.5}, G::Genre},
+        {"reggae", {0, 0, 0, -5.5, 0, 6.5, 6.5, 0, 0, 0}, G::Genre},
+        {"rock", {8, 5, -5.5, -8, -3, 4, 8, 11, 11, 11.5}, G::Genre},
+        {"ska", {-2.5, -5, -4, 0, 4, 5.5, 8, 9, 11, 9}, G::Genre},
+        {"soft", {5, 1.5, 0, -2.5, 0, 4, 8, 9, 11, 12}, G::Genre},
+        {"techno", {8, 8, 4, -2, -4, -2, 0, 4, 6, 8}, G::Genre},
     };
     return list;
+}
+
+QStringList Settings::eqPresetIds(EqGroup group) {
+    QStringList ids;
+    for (const auto &p : eqPresets())
+        if (p.group == group)
+            ids << p.id;
+    return ids;
+}
+
+QStringList Settings::allEqPresetIds() {
+    QStringList ids;
+    for (const auto &p : eqPresets())
+        ids << p.id;
+    return ids << "custom";
 }
 
 const Mode *Settings::findMode(const QString &id) {

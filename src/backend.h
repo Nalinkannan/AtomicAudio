@@ -41,6 +41,8 @@ class Backend : public QObject {
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
     Q_PROPERTY(QStringList modeIds READ modeIds CONSTANT)
     Q_PROPERTY(QStringList eqPresetIds READ eqPresetIds CONSTANT)
+    Q_PROPERTY(QStringList eqToneIds READ eqToneIds CONSTANT)
+    Q_PROPERTY(QStringList eqGenreIds READ eqGenreIds CONSTANT)
     Q_PROPERTY(QList<qreal> eqFrequencies READ eqFrequencies CONSTANT)
 
 public:
@@ -76,7 +78,10 @@ public:
     bool canUndo() const { return !m_undo.isEmpty(); }
     bool canRedo() const { return !m_redo.isEmpty(); }
     QStringList modeIds() const;
+    // Our own presets and "custom" (the chips), then the library's two menus.
     QStringList eqPresetIds() const;
+    QStringList eqToneIds() const { return Settings::eqPresetIds(EqGroup::Tone); }
+    QStringList eqGenreIds() const { return Settings::eqPresetIds(EqGroup::Genre); }
     QList<qreal> eqFrequencies() const;
 
     const Settings &settings() const { return m_settings; }

@@ -236,10 +236,7 @@ QStringList Backend::modeIds() const {
 }
 
 QStringList Backend::eqPresetIds() const {
-    QStringList ids;
-    for (const auto &p : Settings::eqPresets())
-        ids << p.id;
-    return ids << "custom";
+    return Settings::eqPresetIds(EqGroup::House) << "custom";
 }
 
 QList<qreal> Backend::eqFrequencies() const {
@@ -346,8 +343,9 @@ void Backend::setEqPreset(const QString &id) {
     changed();
 }
 
+// Steps through every preset, the library's too, so the TUI reaches them all.
 void Backend::cycleEqPreset() {
-    const QStringList ids = eqPresetIds();
+    const QStringList ids = Settings::allEqPresetIds();
     setEqPreset(ids[(ids.indexOf(profile().eqPreset) + 1) % ids.size()]);
 }
 

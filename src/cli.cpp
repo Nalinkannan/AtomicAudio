@@ -45,7 +45,8 @@ void usage(QTextStream &s) {
          "  atomicaudio set <effect> <0-100>   surround, dialogue, bass, leveler or loudness\n"
          "  atomicaudio set tuning <on|off>    The speaker optimizer\n"
          "  atomicaudio set speakers <curve>   auto, generic or rog-g14-2024 (the optimizer's curve)\n"
-         "  atomicaudio eq <preset>            flat, open, rich, focused or custom (your own)\n"
+         "  atomicaudio eq <preset>            flat, open, rich, focused, custom (your own),\n"
+         "                                     or one of the library's (atomicaudio eq list)\n"
          "  atomicaudio eq <10 gains in dB>    31 Hz … 16 kHz, -12 to 12\n"
          "  atomicaudio bypass [on|off]        Hear the original sound (toggles without an argument)\n"
          "  atomicaudio reset                  Back to the defaults\n"
@@ -406,9 +407,13 @@ int run(int argc, char *argv[]) {
         return save(s);
     }
     if (command == "eq") {
+        if (args == QStringList{"list"}) {
+            out() << Settings::allEqPresetIds().join("\n") << Qt::endl;
+            return 0;
+        }
         if (args.size() == 1) {
             if (!Settings::applyEqPreset(p, args.first()))
-                return fail("eq preset must be one of flat, open, rich, focused, custom");
+                return fail("unknown eq preset; `atomicaudio eq list` shows them all");
             return save(s);
         }
         if (args.size() != atomic::EqBands)

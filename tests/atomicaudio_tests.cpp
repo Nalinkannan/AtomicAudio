@@ -323,6 +323,34 @@ private slots:
         QVERIFY(!Settings::applyMode(p, "nope", false));
         QVERIFY(Settings::applyEqPreset(p, "rich"));
         QCOMPARE(p.eq[1], 3.0);
+        QVERIFY(Settings::applyEqPreset(p, "rock"));
+        QCOMPARE(p.eq[9], 11.5);
+    }
+
+    void libraryPresetsAreWellFormed() {
+        QSet<QString> seen;
+        for (const auto &preset : Settings::eqPresets()) {
+            QVERIFY2(!seen.contains(preset.id), qPrintable(preset.id));
+            seen.insert(preset.id);
+            for (double g : preset.gains)
+                QVERIFY2(g >= -12 && g <= 12, qPrintable(preset.id)); // The plugin's range.
+        }
+        QVERIFY(!seen.contains("custom"));
+        const QStringList all = Settings::allEqPresetIds();
+        QCOMPARE(all.size(), Settings::eqPresets().size() + 1);
+        QCOMPARE(all.last(), QString("custom"));
+        QCOMPARE(Settings::eqPresetIds(EqGroup::House), (QStringList{"flat", "open", "rich", "focused"}));
+        QCOMPARE(Settings::eqPresetIds(EqGroup::Tone).size(), 5);
+        QCOMPARE(Settings::eqPresetIds(EqGroup::Genre).size(), 16);
+
+        // A library preset survives a save and load.
+        QTemporaryDir dir;
+        Settings s;
+        QVERIFY(Settings::applyEqPreset(s.speakers, "deep-house"));
+        QVERIFY(s.save(dir.filePath("s.json")));
+        const Profile loaded = Settings::load(dir.filePath("s.json")).speakers;
+        QCOMPARE(loaded.eqPreset, QString("deep-house"));
+        QCOMPARE(loaded.eq[1], 10.0);
     }
 
     void customModeAndEqKeepYourOwnValues() {
@@ -579,6 +607,16 @@ private slots:
         QCOMPARE(backend.eq()[4], 0.0);
         backend.cycleEqPreset();
         QCOMPARE(backend.eqPreset(), QString("open"));
+        // E reaches the library too, then wraps through custom back to flat.
+        backend.setEqPreset("focused");
+        backend.cycleEqPreset();
+        QCOMPARE(backend.eqPreset(), QString("bass-boost"));
+        backend.setEqPreset("techno");
+        backend.cycleEqPreset();
+        QCOMPARE(backend.eqPreset(), QString("custom"));
+        backend.cycleEqPreset();
+        QCOMPARE(backend.eqPreset(), QString("flat"));
+        QCOMPARE(backend.eqPresetIds(), (QStringList{"flat", "open", "rich", "focused", "custom"}));
     }
 
     void speakersAndHeadphonesAreEditedSeparately() {
