@@ -1,6 +1,10 @@
-# Atomic Audio
+<p align="center">
+  <img src="pkgbuild/atomicaudio.svg" width="128" height="128" alt="Atomic Audio icon">
+</p>
 
-**Dolby Atmos–style sound for laptop speakers on Linux.**
+<h1 align="center">Atomic Audio</h1>
+
+<p align="center"><strong>Dolby Atmos–style sound for laptop speakers on Linux.</strong></p>
 
 ![Atomic Audio](docs/screenshot.png)
 
