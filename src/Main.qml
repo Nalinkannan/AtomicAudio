@@ -21,6 +21,9 @@ ApplicationWindow {
 
     property color fg: theme.foreground
     property color accent: theme.accent
+    // Real colors, not strings: tint() reads their channels.
+    readonly property color warning: "#f59e0b"
+    readonly property color danger: "#ef4444"
     property bool helpVisible: false
     property int selectedEffect: 0
     readonly property var effectKeys: ["surround", "dialogue", "bass", "leveler", "loudness", "tuning"]
@@ -113,6 +116,8 @@ ApplicationWindow {
                     Label {
                         text: backend.outputSink === ""
                               ? qsTr("Looking for your speakers…")
+                              : backend.playingElsewhere
+                              ? qsTr("%1 · not the output in use").arg(backend.outputDescription || backend.outputSink)
                               : qsTr("%1 · playing on %2").arg(backend.outputDescription || backend.outputSink)
                                     .arg(backend.headphonesActive ? qsTr("headphones") : qsTr("speakers"))
                         font.pixelSize: 12
@@ -203,8 +208,8 @@ ApplicationWindow {
                     ToolTip.text: qsTr("Hear the original sound (A)")
                     background: Rectangle {
                         radius: Math.min(20, theme.radius)
-                        color: backend.bypass ? win.tint("#f59e0b", 0.2) : compare.hovered ? win.tint(win.fg, 0.08) : win.tint(win.fg, 0.05)
-                        border.color: backend.bypass ? "#f59e0b" : win.tint(win.fg, 0.08)
+                        color: backend.bypass ? win.tint(win.warning, 0.2) : compare.hovered ? win.tint(win.fg, 0.08) : win.tint(win.fg, 0.05)
+                        border.color: backend.bypass ? win.warning : win.tint(win.fg, 0.08)
                     }
                     contentItem: Item {
                         Row {
@@ -216,13 +221,13 @@ ApplicationWindow {
                                 width: 18
                                 height: 18
                                 anchors.verticalCenter: parent.verticalCenter
-                                color: backend.bypass ? "#f59e0b" : win.tint(win.fg, 0.7)
+                                color: backend.bypass ? win.warning : win.tint(win.fg, 0.7)
                             }
                             Label {
                                 text: backend.bypass ? qsTr("Original") : qsTr("Compare")
                                 anchors.verticalCenter: parent.verticalCenter
                                 font.pixelSize: 13
-                                color: backend.bypass ? "#f59e0b" : win.tint(win.fg, 0.8)
+                                color: backend.bypass ? win.warning : win.tint(win.fg, 0.8)
                             }
                         }
                     }
@@ -254,14 +259,35 @@ ApplicationWindow {
                 }
             }
 
+            // Sound going to Bluetooth, HDMI or USB isn't processed; say so
+            // rather than leave a dead switch.
+            Rectangle {
+                visible: backend.playingElsewhere && backend.error === ""
+                Layout.fillWidth: true
+                implicitHeight: elsewhereLabel.implicitHeight + 20
+                radius: Math.min(6, theme.radius)
+                color: win.tint(win.warning, 0.12)
+                border.color: win.tint(win.warning, 0.45)
+                Label {
+                    id: elsewhereLabel
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    text: qsTr("Sound is going to %1. Atomic Audio enhances the built-in speakers and headphone jack, so switch the output to them to hear it.")
+                              .arg(backend.elsewhereDescription)
+                    wrapMode: Text.Wrap
+                    color: win.fg
+                    font.pixelSize: 13
+                }
+            }
+
             // Problems are said, not hidden.
             Rectangle {
                 visible: backend.error !== ""
                 Layout.fillWidth: true
                 implicitHeight: errorLabel.implicitHeight + 20
                 radius: Math.min(6, theme.radius)
-                color: win.tint("#ef4444", 0.14)
-                border.color: win.tint("#ef4444", 0.5)
+                color: win.tint(win.danger, 0.14)
+                border.color: win.tint(win.danger, 0.5)
                 Label {
                     id: errorLabel
                     anchors.fill: parent
@@ -339,7 +365,6 @@ ApplicationWindow {
                                 delegate: AbstractButton {
                                     id: chip
                                     readonly property bool current: backend.eqPreset === modelData
-                                    visible: modelData !== "custom" || current
                                     implicitWidth: chipLabel.implicitWidth + 24
                                     implicitHeight: 30
                                     hoverEnabled: true
@@ -504,8 +529,8 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     icon: "bass"
                                     title: qsTr("Bass enhancer")
-                                    subtitle: win.editingHeadphones ? qsTr("A fuller low end")
-                                                                    : qsTr("Rebuilds bass the speakers can't play")
+                                    subtitle: win.editingHeadphones ? qsTr("Fuller low end, even at low volume")
+                                                                    : qsTr("Rebuilds bass, fuller at low volume")
                                     value: backend.bass
                                     selected: win.selectedEffect === 2
                                     onMoved: (v) => backend.setAmount("bass", v)
@@ -536,7 +561,8 @@ ApplicationWindow {
                                     icon: "optimizer"
                                     title: qsTr("Speaker optimizer")
                                     subtitle: win.editingHeadphones ? qsTr("Only for the built-in speakers")
-                                                                    : qsTr("Measured for these speakers")
+                                                                    : backend.speakerProfileMeasured ? qsTr("Measured for the %1").arg(backend.speakerProfileName)
+                                                                    : qsTr("General tuning for laptop speakers")
                                     toggle: true
                                     available: !win.editingHeadphones
                                     checked: backend.tuning
@@ -587,7 +613,7 @@ ApplicationWindow {
                 Label {
                     visible: backend.bypass
                     text: qsTr("Comparing: you're hearing the original sound")
-                    color: "#f59e0b"
+                    color: win.warning
                     font.pixelSize: 12
                     font.weight: Font.DemiBold
                 }

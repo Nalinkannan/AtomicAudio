@@ -21,7 +21,11 @@ class Backend : public QObject {
     Q_PROPERTY(bool headphonesActive READ headphonesActive NOTIFY engineChanged)
     Q_PROPERTY(QString outputSink READ outputSink NOTIFY engineChanged)
     Q_PROPERTY(QString outputDescription READ outputDescription NOTIFY engineChanged)
+    Q_PROPERTY(bool playingElsewhere READ playingElsewhere NOTIFY engineChanged)
+    Q_PROPERTY(QString elsewhereDescription READ elsewhereDescription NOTIFY engineChanged)
     Q_PROPERTY(QString error READ error NOTIFY engineChanged)
+    Q_PROPERTY(QString speakerProfileName READ speakerProfileName NOTIFY profileChanged)
+    Q_PROPERTY(bool speakerProfileMeasured READ speakerProfileMeasured NOTIFY profileChanged)
     Q_PROPERTY(bool editingHeadphones READ editingHeadphones WRITE setEditingHeadphones NOTIFY profileChanged)
     Q_PROPERTY(QString mode READ mode NOTIFY profileChanged)
     Q_PROPERTY(double leveler READ leveler NOTIFY profileChanged)
@@ -40,26 +44,31 @@ class Backend : public QObject {
     Q_PROPERTY(QList<qreal> eqFrequencies READ eqFrequencies CONSTANT)
 
 public:
-    // `manageService` off keeps tests away from systemctl.
+    // `manageService` off keeps tests away from systemctl and pactl.
     explicit Backend(const QString &settingsPath = {}, QObject *parent = nullptr, bool manageService = true);
+    ~Backend() override;
 
     bool engineOn() const { return m_engineOn; }
     bool engineBusy() const { return m_busy; }
     bool filterRunning() const { return m_status.running; }
-    bool headphonesActive() const { return m_status.headphones; }
-    QString outputSink() const { return m_status.sink; }
-    QString outputDescription() const { return m_status.description; }
+    bool headphonesActive() const { return output().headphones; }
+    QString outputSink() const { return output().sink; }
+    QString outputDescription() const { return output().description; }
+    bool playingElsewhere() const { return output().elsewhere(); }
+    QString elsewhereDescription() const { return output().defaultDescription; }
     QString error() const { return m_error.isEmpty() ? m_status.error : m_error; }
+    QString speakerProfileName() const;
+    bool speakerProfileMeasured() const;
 
     bool editingHeadphones() const { return m_editHeadphones; }
     void setEditingHeadphones(bool headphones);
 
     QString mode() const { return profile().mode; }
-    double leveler() const { return profile().leveler; }
-    double dialogue() const { return profile().dialogue; }
-    double surround() const { return profile().surround; }
-    double bass() const { return profile().bass; }
-    double loudness() const { return profile().loudness; }
+    double leveler() const { return profile().amounts.leveler; }
+    double dialogue() const { return profile().amounts.dialogue; }
+    double surround() const { return profile().amounts.surround; }
+    double bass() const { return profile().amounts.bass; }
+    double loudness() const { return profile().amounts.loudness; }
     bool tuning() const { return profile().tuning; }
     QString eqPreset() const { return profile().eqPreset; }
     QList<qreal> eq() const;
@@ -71,6 +80,8 @@ public:
     QList<qreal> eqFrequencies() const;
 
     const Settings &settings() const { return m_settings; }
+    // For tests: what the engine or our own query last said.
+    void setOutputForTest(const OutputState &output);
 
     Q_INVOKABLE void toggleEngine();
     Q_INVOKABLE void setMode(const QString &id);
@@ -99,16 +110,21 @@ signals:
 private:
     Profile &profile() { return m_settings.profile(m_editHeadphones); }
     const Profile &profile() const { return m_settings.profile(m_editHeadphones); }
+    // The engine's view of the output while it runs, our own otherwise.
+    const OutputState &output() const { return m_status.running ? m_status.output : m_ownOutput; }
     void remember(const QString &key);
     void changed();
+    void save();
     void restore(const QJsonObject &state);
     void loadFromDisk();
     void watch();
     void readStatus();
+    void followOutput(bool headphones);
     void runSystemctl(const QStringList &args);
 
     QString m_path;
     bool m_manageService;
+    QString m_product;
     Settings m_settings;
     bool m_editHeadphones = false;
     bool m_editPinned = false;
@@ -117,6 +133,7 @@ private:
     QElapsedTimer m_lastChange;
 
     EngineStatus m_status;
+    OutputState m_ownOutput;
     bool m_engineOn = false;
     bool m_busy = false;
     QString m_error;
@@ -127,4 +144,5 @@ private:
     QFileSystemWatcher m_watcher;
     QProcess m_isActive;
     QProcess m_systemctl;
+    OutputQuery m_query;
 };

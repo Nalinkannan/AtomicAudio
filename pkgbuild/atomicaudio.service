@@ -1,6 +1,6 @@
 [Unit]
 Description=Atomic Audio sound enhancement engine
-After=pipewire.service wireplumber.service
+After=pipewire.service pipewire-pulse.service wireplumber.service
 BindsTo=pipewire.service
 
 [Service]

@@ -8,5 +8,5 @@ TARGET = atomicaudio
 QMAKE_CXXFLAGS_RELEASE += -O3 -fvisibility=hidden
 QMAKE_LFLAGS += -Wl,--no-undefined
 
-HEADERS += ladspa.h params.h biquad.h processor.h
+HEADERS += ladspa.h params.h profiles.h biquad.h processor.h
 SOURCES += processor.cpp plugin.cpp

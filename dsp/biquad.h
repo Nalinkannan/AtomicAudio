@@ -32,6 +32,14 @@ inline Coeffs highpass(double fs, double f, double q) {
     return normalized((1 + c) / 2, -(1 + c), (1 + c) / 2, 1 + al, -2 * c, 1 - al);
 }
 
+// Second-order all-pass; with Q = 1/sqrt(2) it has exactly the phase of a
+// Linkwitz-Riley crossover's summed output, so bands split at one frequency
+// stay in phase with bands split at another.
+inline Coeffs allpass(double fs, double f, double q) {
+    const double w = omega(fs, f), c = std::cos(w), al = std::sin(w) / (2 * q);
+    return normalized(1 - al, -2 * c, 1 + al, 1 + al, -2 * c, 1 - al);
+}
+
 inline Coeffs peaking(double fs, double f, double q, double db) {
     if (std::fabs(db) < 1e-6)
         return {};

@@ -16,8 +16,10 @@ mkdir -p "$PREFIX/share/applications"
 sed "s|^Exec=atomicaudio|Exec=$PREFIX/bin/atomicaudio|" pkgbuild/atomicaudio.desktop \
     > "$PREFIX/share/applications/atomicaudio.desktop"
 
-# A running engine keeps the old binary until it restarts.
+# A running engine keeps the old binary until it restarts; `on` also brings
+# an older service file up to date first.
 if systemctl --user is-active --quiet atomicaudio.service 2>/dev/null; then
+    "$PREFIX/bin/atomicaudio" on >/dev/null
     systemctl --user restart atomicaudio.service
 fi
 

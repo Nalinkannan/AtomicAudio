@@ -4,12 +4,17 @@ CONFIG += c++17 release
 TARGET = atomicaudio
 TEMPLATE = app
 
+# The app's version; keep pkgver in pkgbuild/PKGBUILD in step.
+VERSION = 0.2.0
+DEFINES += APP_VERSION=\\\"$$VERSION\\\"
+
 INCLUDEPATH += dsp
 
 HEADERS += \
     dsp/biquad.h \
     dsp/params.h \
     dsp/processor.h \
+    dsp/profiles.h \
     src/analyzer.h \
     src/backend.h \
     src/cli.h \

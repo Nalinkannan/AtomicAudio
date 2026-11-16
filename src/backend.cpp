@@ -1,11 +1,13 @@
 #include "backend.h"
-#include "processor.h"
+#include "biquad.h"
+#include "profiles.h"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <algorithm>
+#include <vector>
 #include <cmath>
 
 using namespace atomic;
@@ -17,21 +19,21 @@ constexpr double kGraphRate = 48000.0;
 
 Backend::Backend(const QString &settingsPath, QObject *parent, bool manageService)
     : QObject(parent), m_path(settingsPath.isEmpty() ? paths::settingsFile() : settingsPath),
-      m_manageService(manageService) {
+      m_manageService(manageService), m_product(productName()) {
     QString error;
     m_settings = Settings::load(m_path, &error);
-    m_error = error;
+    if (!error.isEmpty()) {
+        // Keep the broken file: the next save would otherwise replace the
+        // only copy of whatever was in it.
+        const QString backup = m_path + ".broken";
+        QFile::remove(backup);
+        QFile::copy(m_path, backup);
+        m_error = tr("Your settings couldn't be read, so the defaults are in use. The old file is at %1.").arg(backup);
+    }
 
     m_save.setSingleShot(true);
     m_save.setInterval(20);
-    connect(&m_save, &QTimer::timeout, this, [this] {
-        QString err;
-        if (!m_settings.save(m_path, &err))
-            m_error = tr("Couldn't save settings: %1").arg(err);
-        else if (m_error.startsWith(tr("Couldn't save settings")))
-            m_error.clear();
-        emit engineChanged();
-    });
+    connect(&m_save, &QTimer::timeout, this, &Backend::save);
 
     // The CLI can change settings while the window is open.
     m_reload.setSingleShot(true);
@@ -67,13 +69,42 @@ Backend::Backend(const QString &settingsPath, QObject *parent, bool manageServic
         emit engineChanged();
     });
 
+    // Without the engine there's no status file, so ask the sound server
+    // ourselves which output is in use.
+    connect(&m_query, &OutputQuery::finished, this, [this](const OutputState &state) {
+        if (m_status.running)
+            return;
+        m_ownOutput = state;
+        followOutput(state.headphones);
+        emit engineChanged();
+    });
+
     m_poll.setInterval(1500);
     connect(&m_poll, &QTimer::timeout, this, &Backend::refresh);
     if (m_manageService) {
         m_poll.start();
         refresh();
     }
-    m_editHeadphones = m_status.headphones;
+    m_editHeadphones = output().headphones;
+}
+
+Backend::~Backend() {
+    // Quitting right after a change must not lose it.
+    if (m_save.isActive()) {
+        m_save.stop();
+        save();
+    }
+}
+
+void Backend::save() {
+    QString err;
+    if (!m_settings.save(m_path, &err)) {
+        m_error = tr("Couldn't save settings: %1").arg(err);
+        emit engineChanged();
+    } else if (m_error.startsWith(tr("Couldn't save settings"))) {
+        m_error.clear();
+        emit engineChanged();
+    }
 }
 
 void Backend::watch() {
@@ -89,8 +120,11 @@ void Backend::watch() {
 
 void Backend::loadFromDisk() {
     watch();
-    if (m_save.isActive())
-        return; // Our own pending write wins.
+    if (m_save.isActive()) {
+        // Our own pending write goes first; look again after it.
+        m_reload.start();
+        return;
+    }
     QString error;
     const Settings next = Settings::load(m_path, &error);
     if (!error.isEmpty() || next.toJson() == m_settings.toJson())
@@ -99,15 +133,35 @@ void Backend::loadFromDisk() {
     emit profileChanged();
 }
 
-void Backend::readStatus() {
-    const EngineStatus next = EngineStatus::read(paths::statusFile());
-    const bool outputChanged = next.headphones != m_status.headphones;
-    const bool differs = next.toJson() != m_status.toJson();
-    m_status = next;
-    if (outputChanged && !m_editPinned && m_editHeadphones != m_status.headphones) {
-        m_editHeadphones = m_status.headphones;
+void Backend::setOutputForTest(const OutputState &output) {
+    m_ownOutput = output;
+    followOutput(output.headphones);
+    emit engineChanged();
+}
+
+void Backend::followOutput(bool headphones) {
+    // Plugging in moves the editor to what you now hear, unless you chose to
+    // edit the other output; once both agree again, it follows once more.
+    if (m_editPinned) {
+        if (m_editHeadphones == headphones)
+            m_editPinned = false;
+        return;
+    }
+    if (m_editHeadphones != headphones) {
+        m_editHeadphones = headphones;
         emit profileChanged();
     }
+}
+
+void Backend::readStatus() {
+    EngineStatus next = EngineStatus::read(paths::statusFile());
+    // A crashed engine leaves its file behind; don't believe it.
+    if (next.running && !next.alive())
+        next = EngineStatus();
+    const bool differs = next.toJson() != m_status.toJson();
+    m_status = next;
+    if (m_status.running)
+        followOutput(m_status.output.headphones);
     if (differs)
         emit engineChanged();
 }
@@ -116,6 +170,8 @@ void Backend::refresh() {
     if (!m_manageService)
         return;
     readStatus();
+    if (!m_status.running)
+        m_query.start();
     if (m_isActive.state() == QProcess::NotRunning)
         m_isActive.start("systemctl", {"--user", "is-active", "--quiet", service::kUnit});
 }
@@ -135,25 +191,34 @@ void Backend::toggleEngine() {
         runSystemctl({"disable", "--now", service::kUnit});
         return;
     }
-    // A build that wasn't installed as a package brings its own user unit.
-    if (!service::unitInstalled()) {
-        QString err;
-        if (!service::writeUserUnit(QCoreApplication::applicationFilePath(), &err)) {
-            m_error = tr("Couldn't write the service: %1").arg(err);
-            emit engineChanged();
-            return;
-        }
-        service::run({"daemon-reload"});
+    // A build that wasn't installed as a package brings its own user unit,
+    // pointing at this very binary.
+    bool changed = false;
+    QString err;
+    if (!service::ensureUserUnit(QCoreApplication::applicationFilePath(), &changed, &err)) {
+        m_error = tr("Couldn't write the service: %1").arg(err);
+        emit engineChanged();
+        return;
     }
+    if (changed)
+        service::run({"daemon-reload"});
     runSystemctl({"enable", "--now", service::kUnit});
 }
 
 void Backend::setEditingHeadphones(bool headphones) {
-    m_editPinned = headphones != m_status.headphones;
+    m_editPinned = headphones != output().headphones;
     if (headphones == m_editHeadphones)
         return;
     m_editHeadphones = headphones;
     emit profileChanged();
+}
+
+QString Backend::speakerProfileName() const {
+    return QString::fromUtf8(kSpeakerProfiles[m_settings.resolveSpeakerProfile(m_product)].name);
+}
+
+bool Backend::speakerProfileMeasured() const {
+    return m_settings.resolveSpeakerProfile(m_product) != kGenericProfile;
 }
 
 QList<qreal> Backend::eq() const {
@@ -203,7 +268,11 @@ void Backend::changed() {
 }
 
 void Backend::restore(const QJsonObject &state) {
+    // Comparing with the original is listening, not editing: undo never
+    // flips it.
+    const bool bypass = m_settings.bypass;
     m_settings = Settings::fromJson(state);
+    m_settings.bypass = bypass;
     m_lastKey.clear();
     changed();
     emit historyChanged();
@@ -235,35 +304,20 @@ void Backend::setMode(const QString &id) {
 }
 
 void Backend::setAmount(const QString &key, double value) {
-    value = std::isfinite(value) ? std::clamp(value, 0.0, 1.0) : 0.0;
     Profile next = profile();
-    double *slot = key == "leveler"    ? &next.leveler
-                   : key == "dialogue" ? &next.dialogue
-                   : key == "surround" ? &next.surround
-                   : key == "bass"     ? &next.bass
-                   : key == "loudness" ? &next.loudness
-                                       : nullptr;
-    if (!slot || std::fabs(*slot - value) < 1e-6)
+    if (!Settings::setAmount(next, key, value) || next == profile())
         return;
-    *slot = value;
-    // Moving a slider away from a mode's value makes it your own.
-    next.mode = "custom";
     remember(key);
     profile() = next;
     changed();
 }
 
 void Backend::nudge(const QString &key, double delta) {
-    const Profile &p = profile();
-    const double current = key == "leveler"    ? p.leveler
-                           : key == "dialogue" ? p.dialogue
-                           : key == "surround" ? p.surround
-                           : key == "bass"     ? p.bass
-                           : key == "loudness" ? p.loudness
-                                               : -1;
-    if (current < 0)
+    Profile copy = profile();
+    const double *current = copy.amounts.find(key);
+    if (!current)
         return;
-    setAmount(key, std::round((current + delta) * 100.0) / 100.0);
+    setAmount(key, std::round((*current + delta) * 100.0) / 100.0);
 }
 
 void Backend::setTuning(bool on) {
@@ -275,14 +329,11 @@ void Backend::setTuning(bool on) {
 }
 
 void Backend::setEqBand(int band, double db) {
-    if (band < 0 || band >= EqBands)
-        return;
-    db = std::isfinite(db) ? std::clamp(std::round(db * 2.0) / 2.0, -12.0, 12.0) : 0.0;
-    if (profile().eq[band] == db)
+    Profile next = profile();
+    if (!Settings::setEqBand(next, band, db) || next == profile())
         return;
     remember(QStringLiteral("eq%1").arg(band));
-    profile().eq[band] = db;
-    profile().eqPreset = "custom";
+    profile() = next;
     changed();
 }
 
@@ -296,16 +347,11 @@ void Backend::setEqPreset(const QString &id) {
 }
 
 void Backend::cycleEqPreset() {
-    const auto &presets = Settings::eqPresets();
-    int index = -1;
-    for (int i = 0; i < presets.size(); ++i)
-        if (presets[i].id == profile().eqPreset)
-            index = i;
-    setEqPreset(presets[(index + 1) % presets.size()].id);
+    const QStringList ids = eqPresetIds();
+    setEqPreset(ids[(ids.indexOf(profile().eqPreset) + 1) % ids.size()]);
 }
 
 void Backend::toggleBypass() {
-    remember("bypass");
     m_settings.bypass = !m_settings.bypass;
     changed();
 }
@@ -343,9 +389,10 @@ QList<qreal> Backend::tuningResponse(int points) const {
     const bool on = profile().tuning && !m_editHeadphones;
     std::vector<Coeffs> k;
     if (on) {
-        k.push_back(highpass(kGraphRate, kSpeakerHighpass, 0.5412));
-        k.push_back(highpass(kGraphRate, kSpeakerHighpass, 1.3066));
-        for (const auto &band : kSpeakerTuning)
+        const auto &sp = kSpeakerProfiles[m_settings.resolveSpeakerProfile(m_product)];
+        k.push_back(highpass(kGraphRate, sp.highpass, 0.5412));
+        k.push_back(highpass(kGraphRate, sp.highpass, 1.3066));
+        for (const auto &band : sp.bands)
             k.push_back(band.kind == TuningBand::Peak ? peaking(kGraphRate, band.freq, band.q, band.db)
                                                       : highshelf(kGraphRate, band.freq, band.q, band.db));
     }

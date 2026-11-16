@@ -24,8 +24,15 @@ Engine::Engine(QObject *parent) : QObject(parent) {
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, &m_settingsDebounce, qOverload<>(&QTimer::start));
 
     m_outputDebounce.setSingleShot(true);
-    m_outputDebounce.setInterval(150);
-    connect(&m_outputDebounce, &QTimer::timeout, this, &Engine::refreshOutput);
+    m_outputDebounce.setInterval(120);
+    connect(&m_outputDebounce, &QTimer::timeout, &m_query, &OutputQuery::start);
+    connect(&m_query, &OutputQuery::finished, this, &Engine::onOutput);
+    connect(&m_query, &OutputQuery::failed, this, [](const QString &error) { log(error); });
+
+    // At login the sound server can still be starting; keep looking for the
+    // speakers until they show up.
+    m_outputRetry.setInterval(3000);
+    connect(&m_outputRetry, &QTimer::timeout, &m_query, &OutputQuery::start);
 
     m_restart.setSingleShot(true);
     connect(&m_restart, &QTimer::timeout, this, &Engine::startPipewire);
@@ -88,18 +95,26 @@ Engine::Engine(QObject *parent) : QObject(parent) {
         if (data.contains("sink") || data.contains("card") || data.contains("server"))
             m_outputDebounce.start();
     });
+    connect(&m_subscribe, &QProcess::started, &m_query, &OutputQuery::start);
     connect(&m_subscribe, &QProcess::finished, this, [this] {
         if (!m_stopping)
             QTimer::singleShot(2000, this, &Engine::startSubscribe);
     });
-
-    connect(&m_query, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
-        if (code == 0 && status == QProcess::NormalExit)
-            onOutput(parseSinks(m_query.readAllStandardOutput()));
-    });
 }
 
 Engine::~Engine() { stop(); }
+
+Controls Engine::currentControls() const {
+    // A muted output tells nothing about how loud you listen; keep the contour.
+    const double volume = m_output.found && !m_output.muted ? m_output.volumeDb : 0.0;
+    const Controls fromSettings = m_settings.controls(m_output.headphones, m_profile, volume);
+    if (m_output.muted && m_haveSent) {
+        Controls c = fromSettings;
+        c[atomic::Volume] = m_sent[atomic::Volume];
+        return c;
+    }
+    return fromSettings;
+}
 
 bool Engine::start(QString *error) {
     if (!QDir().mkpath(paths::runtimeDir())) {
@@ -114,13 +129,18 @@ bool Engine::start(QString *error) {
     m_settings = Settings::load(paths::settingsFile(), &settingsError);
     if (!settingsError.isEmpty())
         log(settingsError);
+    m_product = productName();
+    m_profile = m_settings.resolveSpeakerProfile(m_product);
+    log(tr("Speaker optimizer: %1").arg(atomic::kSpeakerProfiles[m_profile].name));
 
     QString queryError;
     m_output = queryOutput(3000, &queryError);
     if (!queryError.isEmpty())
         log(queryError);
-    if (!m_output.found)
-        log(tr("No built-in speakers found; filtering the default output instead."));
+    if (!m_output.found) {
+        log(tr("No built-in speakers found yet; filtering the default output until they show up."));
+        m_outputRetry.start();
+    }
 
     watchSettings();
     startPipewire();
@@ -131,8 +151,9 @@ bool Engine::start(QString *error) {
 
 void Engine::stop() {
     m_stopping = true;
-    m_restart.stop();
-    for (QProcess *p : {&m_pipewire, &m_pwcli, &m_subscribe, &m_query}) {
+    for (QTimer *t : {&m_restart, &m_outputRetry, &m_outputDebounce, &m_settingsDebounce, &m_resend, &m_pwcliWarmup})
+        t->stop();
+    for (QProcess *p : {&m_pipewire, &m_pwcli, &m_subscribe}) {
         if (p->state() == QProcess::NotRunning)
             continue;
         p->terminate();
@@ -146,7 +167,7 @@ void Engine::stop() {
 void Engine::startPipewire() {
     if (m_stopping || m_pipewire.state() != QProcess::NotRunning)
         return;
-    const Controls controls = m_settings.controls(m_output.headphones);
+    const Controls controls = currentControls();
     QSaveFile conf(paths::engineConfigFile());
     if (!conf.open(QIODevice::WriteOnly) ||
         conf.write(engineConfig(controls, paths::pluginPath(), m_output.sink).toUtf8()) < 0 || !conf.commit()) {
@@ -166,6 +187,17 @@ void Engine::startPipewire() {
             if (m_pipewire.state() == QProcess::Running)
                 m_failures = 0;
         });
+}
+
+void Engine::restartPipewire() {
+    m_restart.stop();
+    m_stopping = true;
+    m_pipewire.terminate();
+    if (!m_pipewire.waitForFinished(2000))
+        m_pipewire.kill();
+    m_pipewire.waitForFinished(500);
+    m_stopping = false;
+    startPipewire();
 }
 
 void Engine::startSubscribe() {
@@ -194,32 +226,35 @@ void Engine::reloadSettings() {
         return;
     }
     m_settings = next;
+    const int profile = m_settings.resolveSpeakerProfile(m_product);
+    if (profile != m_profile) {
+        m_profile = profile;
+        log(tr("Speaker optimizer: %1").arg(atomic::kSpeakerProfiles[m_profile].name));
+        writeStatus();
+    }
     applyControls();
 }
 
-void Engine::refreshOutput() {
-    if (m_query.state() != QProcess::NotRunning)
-        return;
-    m_query.start("pactl", {"-f", "json", "list", "sinks"});
-}
-
 void Engine::onOutput(const OutputState &state) {
-    const bool sinkChanged = state.found && state.sink != m_runningSink;
+    if (!state.found) {
+        // Keep what we had; the speakers may just be between card profiles.
+        if (!m_outputRetry.isActive())
+            m_outputRetry.start();
+        return;
+    }
+    m_outputRetry.stop();
+    const bool sinkChanged = state.sink != m_runningSink;
     const bool modeChanged = state.headphones != m_output.headphones;
-    if (state.found)
-        m_output = state;
+    m_output = state;
     if (sinkChanged) {
-        // A new card profile renames the sink; the smart filter's target is
-        // fixed in the config, so restart the filter against the new name.
-        log(tr("Output is now %1; restarting the filter.").arg(state.sink));
-        m_restart.stop();
-        m_stopping = true;
-        m_pipewire.terminate();
-        m_pipewire.waitForFinished(2000);
-        m_stopping = false;
-        startPipewire();
-    } else if (modeChanged) {
-        log(state.headphones ? tr("Headphones plugged in.") : tr("Back on speakers."));
+        // A new card profile renames the sink (and at login the speakers may
+        // only now have appeared); the smart filter's target is fixed in the
+        // config, so restart the filter against the right name.
+        log(tr("Filtering %1.").arg(state.sink));
+        restartPipewire();
+    } else {
+        if (modeChanged)
+            log(state.headphones ? tr("Headphones plugged in.") : tr("Back on speakers."));
         applyControls();
     }
     writeStatus();
@@ -228,7 +263,7 @@ void Engine::onOutput(const OutputState &state) {
 void Engine::applyControls() {
     if (!ensurePwcli())
         return; // Runs again once pw-cli is ready.
-    const Controls controls = m_settings.controls(m_output.headphones);
+    const Controls controls = currentControls();
     const QString command = setParamCommand(controls, m_haveSent ? &m_sent : nullptr);
     if (command.isEmpty())
         return;
@@ -257,9 +292,8 @@ void Engine::send(const QString &command) { m_pwcli.write(command.toUtf8() + '\n
 void Engine::writeStatus() {
     EngineStatus status;
     status.running = m_pipewire.state() == QProcess::Running;
-    status.headphones = m_output.headphones;
-    status.sink = m_output.sink;
-    status.description = m_output.description;
+    status.output = m_output;
+    status.speakerProfile = atomic::kSpeakerProfiles[m_profile].id;
     status.error = m_error;
     status.pid = QCoreApplication::applicationPid();
     status.write(paths::statusFile());

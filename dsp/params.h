@@ -16,6 +16,11 @@ enum Param : int {
     Tuning,
     Ceiling,
     Eq1, Eq2, Eq3, Eq4, Eq5, Eq6, Eq7, Eq8, Eq9, Eq10,
+    // Which speaker optimizer curve (index into kSpeakerProfiles).
+    SpeakerCurve,
+    // The output's volume in dB (0 = full); quieter listening gets more bass
+    // and treble back, the way hearing needs it.
+    Volume,
     ParamCount
 };
 
@@ -49,6 +54,8 @@ inline constexpr ParamInfo kParams[ParamCount] = {
     {"EQ8", -12, 12, 0, false},
     {"EQ9", -12, 12, 0, false},
     {"EQ10", -12, 12, 0, false},
+    {"Profile", 0, 1, 0, false},
+    {"Volume", -90, 0, 0, false},
 };
 
 inline constexpr double kEqFreqs[EqBands] = {31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};

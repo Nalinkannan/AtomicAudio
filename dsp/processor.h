@@ -1,33 +1,18 @@
 // The Atomic Audio signal chain: leveler, speaker optimizer, virtual bass,
-// dialogue enhancer, surround virtualizer, 10-band EQ, loudness compressor and
-// a lookahead peak limiter. Plain C++ with no allocation after construction,
-// so it can run inside PipeWire's real-time thread.
+// volume-aware loudness contour, dialogue enhancer, surround virtualizer,
+// 10-band EQ, three-band loudness compressor and a lookahead peak limiter.
+// Plain C++ with no allocation after construction, so it can run inside
+// PipeWire's real-time thread.
 #pragma once
 
 #include "biquad.h"
 #include "params.h"
+#include "profiles.h"
 
 #include <array>
 #include <vector>
 
 namespace atomic {
-
-// The speaker optimizer for the ASUS ROG Zephyrus G14 (GA403), measured with
-// its own microphone: the amps cut everything under ~95 Hz, the woofer cavity
-// rings at 630 Hz (+12 dB, Q ~4), and the woofer/tweeter handover leaves a dip
-// around 2.5 kHz. Scaled by `amount` so the optimizer can fade in and out.
-struct TuningBand {
-    enum Kind { Peak, HighShelf } kind;
-    double freq, q, db;
-};
-inline constexpr std::array<TuningBand, 5> kSpeakerTuning = {{
-    {TuningBand::Peak, 150, 0.9, 2.0},
-    {TuningBand::Peak, 630, 4.0, -7.0},
-    {TuningBand::Peak, 1200, 1.2, -2.0},
-    {TuningBand::Peak, 2500, 1.5, 2.5},
-    {TuningBand::HighShelf, 11000, 0.7, 1.5},
-}};
-inline constexpr double kSpeakerHighpass = 80.0;
 
 class Processor {
 public:
@@ -44,31 +29,43 @@ public:
     double sampleRate() const { return m_fs; }
     double limiterGainDb() const;
 
+    // Crossover points of the loudness compressor.
+    static constexpr double kLowSplit = 200.0;
+    static constexpr double kHighSplit = 3000.0;
+    static constexpr int kLoudBands = 3;
+
 private:
+    using Stereo = std::array<Biquad, 2>;
+
     void smoothParams(unsigned frames);
     void updateFilters();
     void processChunk(const float *inL, const float *inR, float *outL, float *outR, unsigned n);
-    double limit(double &l, double &r);
+    void limit(double &l, double &r, double ceiling);
 
     double m_fs;
     std::array<float, ParamCount> m_target{};
     std::array<double, ParamCount> m_smooth{};
     std::array<double, ParamCount> m_applied{};
+    int m_profile = -1;
     bool m_first = true;
 
-    // Leveler: K-weighted loudness of the mid signal drives a slow gain.
-    Biquad m_levHp, m_levShelf;
+    // Leveler: K-weighted loudness of both channels drives a slow gain.
+    Stereo m_levHp, m_levShelf;
     double m_levMs = 0, m_levGainDb = 0;
 
     // Speaker optimizer.
-    std::array<Biquad, 2> m_tunHp1, m_tunHp2;
-    std::array<std::array<Biquad, 2>, kSpeakerTuning.size()> m_tun;
+    Stereo m_tunHp1, m_tunHp2;
+    std::array<Stereo, 5> m_tun;
 
     // Virtual bass: the band the speakers can't play is turned into
     // harmonics they can, and shelves add what they can play for real.
     Biquad m_bLp1, m_bLp2, m_bHp, m_hHp1, m_hHp2, m_hLp;
-    double m_bEnv = 0, m_bEnvAtk = 0, m_bEnvRel = 0, m_harmGain = 0;
-    std::array<Biquad, 2> m_shelfSpk, m_shelfHp;
+    double m_bEnv = 0, m_bEnvRel = 0, m_harmGain = 0;
+    int m_bHold = 0, m_bHoldLen = 0;
+    Stereo m_shelfSpk, m_shelfHp;
+
+    // Equal-loudness contour that follows the output volume.
+    Stereo m_contourLow, m_contourHigh;
 
     // Dialogue enhancer works on the mid (center) signal.
     Biquad m_dPres, m_dLow;
@@ -89,16 +86,23 @@ private:
         }
     };
     std::array<std::array<Allpass, 3>, 2> m_ap;
-    std::array<Biquad, 2> m_xtLp;
+    std::array<OnePole, 2> m_ambLp;
+    Stereo m_xtLp;
     std::array<OnePole, 2> m_cfLp;
     static constexpr int kRing = 64;
     std::array<std::array<double, kRing>, 2> m_xtRing{}, m_cfRing{};
     int m_ringPos = 0, m_xtDelay = 3, m_cfDelay = 14;
 
-    std::array<std::array<Biquad, 2>, EqBands> m_eq;
+    std::array<Stereo, EqBands> m_eq;
 
-    // Loudness compressor (stereo-linked RMS).
-    double m_compMs = 0, m_compGrDb = 0;
+    // Three-band loudness compressor on Linkwitz-Riley crossovers, so a
+    // kick drum no longer pushes the voices down.
+    struct Split {
+        Biquad lowA, lowB, highA, highB;
+    };
+    std::array<Split, 2> m_split1, m_split2; // per channel, at kLowSplit and kHighSplit
+    Stereo m_lowAllpass;                     // keeps the low band in phase with the other two
+    std::array<double, kLoudBands> m_bandMs{}, m_bandGrDb{};
 
     // Lookahead limiter: hold-min of the needed gain, release, then a box
     // filter as long as the lookahead so the gain is down before the peak.

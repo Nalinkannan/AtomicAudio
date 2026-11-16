@@ -1,5 +1,6 @@
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -90,8 +91,70 @@ private slots:
         Processor p(kFs);
         flatten(p);
         p.setParam(Tuning, 1);
+        p.setParam(SpeakerCurve, profileIndex("rog-g14-2024"));
         QVERIFY(sineGainDb(p, 630, 0.05) < -6.0);
         QVERIFY(sineGainDb(p, 50, 0.05) < -12.0);
+    }
+
+    void onlyTheG14CurveCutsItsResonance() {
+        Processor generic(kFs);
+        flatten(generic);
+        generic.setParam(Tuning, 1);
+        generic.setParam(SpeakerCurve, kGenericProfile);
+        QVERIFY(std::fabs(sineGainDb(generic, 630, 0.05)) < 1.0);
+    }
+
+    void loudnessBandsSumFlat() {
+        // At zero loudness the three bands add back up to the input.
+        for (double f = 40; f < 16000; f *= 1.6) {
+            Processor p(kFs);
+            flatten(p);
+            QVERIFY2(std::fabs(sineGainDb(p, f)) < 0.1, qPrintable(QString::number(f)));
+        }
+    }
+
+    void bassHitsDontPushVoicesDown() {
+        Processor p(kFs);
+        flatten(p);
+        p.setParam(Loudness, 0.8);
+        p.setParam(Ceiling, -1);
+        const int n = int(kFs) * 4;
+        std::vector<float> in(n), out(n), other(n);
+        for (int i = 0; i < n; ++i) {
+            const double t = i / kFs;
+            const double kick = std::fmod(t, 0.5) < 0.1 ? 0.5 * std::sin(2 * M_PI * 60 * t) : 0.0;
+            in[i] = float(0.1 * std::sin(2 * M_PI * 1000 * t) + kick);
+        }
+        for (int i = 0; i < n; i += 256)
+            p.process(&in[i], &in[i], &out[i], &other[i], 256);
+        auto voiceDb = [&](double from, double to) {
+            double sum = 0;
+            int count = 0;
+            for (double w = 2.0; w + 0.5 < n / kFs; w += 0.5) {
+                double re = 0, im = 0;
+                const int a = int((w + from) * kFs), b = int((w + to) * kFs);
+                for (int i = a; i < b; ++i) {
+                    re += out[i] * std::cos(2 * M_PI * 1000 * i / kFs);
+                    im += out[i] * std::sin(2 * M_PI * 1000 * i / kFs);
+                }
+                sum += 20 * std::log10(2 * std::hypot(re, im) / (b - a));
+                ++count;
+            }
+            return sum / count;
+        };
+        QVERIFY(std::fabs(voiceDb(0.02, 0.09) - voiceDb(0.25, 0.45)) < 1.0);
+    }
+
+    void quietListeningGetsBassBack() {
+        auto bassAt = [](float volumeDb) {
+            Processor p(kFs);
+            flatten(p);
+            p.setParam(Bass, 1);
+            p.setParam(Volume, volumeDb);
+            return sineGainDb(p, 150, 0.05) - sineGainDb(p, 1000, 0.05);
+        };
+        QVERIFY(std::fabs(bassAt(0) - bassAt(-8)) < 0.1);  // Loud: unchanged.
+        QVERIFY(bassAt(-35) > bassAt(0) + 3.0);              // Quiet: more bass.
     }
 
     void headphonesSkipTheSpeakerOptimizer() {
@@ -230,8 +293,8 @@ private slots:
         const Settings s = Settings::fromJson(doc.object());
         QCOMPARE(s.ceiling, 0.0);
         QCOMPARE(s.speakers.mode, QString("dynamic"));
-        QCOMPARE(s.speakers.bass, 1.0);
-        QCOMPARE(s.speakers.surround, 0.0);
+        QCOMPARE(s.speakers.amounts.bass, 1.0);
+        QCOMPARE(s.speakers.amounts.surround, 0.0);
         QCOMPARE(s.speakers.eq[0], 12.0);
         QCOMPARE(s.speakers.eq[1], -12.0);
         QCOMPARE(s.speakers.eq[2], 0.0);
@@ -242,10 +305,10 @@ private slots:
         QTemporaryDir dir;
         const QString path = dir.filePath("nested/settings.json");
         Settings s;
-        s.speakers.bass = 0.9;
+        s.speakers.amounts.bass = 0.9;
         QString error;
         QVERIFY(s.save(path, &error));
-        QCOMPARE(Settings::load(path).speakers.bass, 0.9);
+        QCOMPARE(Settings::load(path).speakers.amounts.bass, 0.9);
         write(dir.filePath("broken.json"), "{ nope");
         Settings::load(dir.filePath("broken.json"), &error);
         QVERIFY(!error.isEmpty());
@@ -254,21 +317,67 @@ private slots:
     void modesAndPresetsApply() {
         Profile p;
         QVERIFY(Settings::applyMode(p, "voice", false));
-        QCOMPARE(p.dialogue, 0.9);
+        QCOMPARE(p.amounts.dialogue, 0.9);
         QVERIFY(Settings::applyMode(p, "movie", true));
-        QVERIFY(p.loudness <= 0.3); // Headphones need less.
+        QVERIFY(p.amounts.loudness <= 0.3); // Headphones need less.
         QVERIFY(!Settings::applyMode(p, "nope", false));
         QVERIFY(Settings::applyEqPreset(p, "rich"));
         QCOMPARE(p.eq[1], 3.0);
     }
 
+    void customModeAndEqKeepYourOwnValues() {
+        Profile p;
+        QVERIFY(Settings::setAmount(p, "bass", 0.95));
+        QCOMPARE(p.mode, QString("custom"));
+        QVERIFY(Settings::setEqBand(p, 2, 4.2));
+        QCOMPARE(p.eq[2], 4.0); // Half-decibel steps.
+        QCOMPARE(p.eqPreset, QString("custom"));
+        Settings::applyMode(p, "voice", false);
+        Settings::applyEqPreset(p, "rich");
+        QCOMPARE(p.amounts.bass, 0.1);
+        Settings::applyMode(p, "custom", false);
+        Settings::applyEqPreset(p, "custom");
+        QCOMPARE(p.amounts.bass, 0.95);
+        QCOMPARE(p.eq[2], 4.0);
+        QVERIFY(!Settings::setAmount(p, "nope", 1));
+        QVERIFY(!Settings::setEqBand(p, 10, 1));
+    }
+
+    void oldSettingsFilesKeepTheirCustomMix() {
+        const auto doc = QJsonDocument::fromJson(R"({"speakers": {"mode": "custom", "bass": 0.8,
+            "eqPreset": "custom", "eq": [1, 2, 3, 0, 0, 0, 0, 0, 0, 0]}})");
+        Profile p = Settings::fromJson(doc.object()).speakers;
+        Settings::applyMode(p, "music", false);
+        Settings::applyEqPreset(p, "flat");
+        Settings::applyMode(p, "custom", false);
+        Settings::applyEqPreset(p, "custom");
+        QCOMPARE(p.amounts.bass, 0.8);
+        QCOMPARE(p.eq[2], 3.0);
+    }
+
+    void theOptimizerCurveFollowsTheLaptop() {
+        Settings s;
+        QCOMPARE(s.resolveSpeakerProfile("ROG Zephyrus G14 GA403UM_GA403UM"), profileIndex("rog-g14-2024"));
+        QCOMPARE(s.resolveSpeakerProfile("ThinkPad X1 Carbon"), kGenericProfile);
+        QCOMPARE(s.resolveSpeakerProfile(""), kGenericProfile);
+        s.speakerProfile = "generic";
+        QCOMPARE(s.resolveSpeakerProfile("ROG Zephyrus G14 GA403UM_GA403UM"), kGenericProfile);
+        const auto doc = QJsonDocument::fromJson(R"({"speakerProfile": "made-up"})");
+        QCOMPARE(Settings::fromJson(doc.object()).speakerProfile, QString("auto"));
+    }
+
     void controlsFollowTheOutput() {
         Settings s;
-        s.speakers.bass = 0.2;
-        s.headphones.bass = 0.8;
+        s.speakers.amounts.bass = 0.2;
+        s.headphones.amounts.bass = 0.8;
         QCOMPARE(s.controls(false)[Bass], 0.2f);
         QCOMPARE(s.controls(true)[Bass], 0.8f);
         QCOMPARE(s.controls(true)[Headphones], 1.0f);
+        const Controls c = s.controls(false, 1, -23.6);
+        QCOMPARE(c[SpeakerCurve], 1.0f);
+        QCOMPARE(c[Volume], -24.0f); // Whole decibels.
+        QCOMPARE(s.controls(false, 7, NAN)[SpeakerCurve], float(kSpeakerProfiles.size() - 1));
+        QCOMPARE(s.controls(false, 0, NAN)[Volume], 0.0f);
     }
 
     void engineConfigTargetsTheSpeakers() {
@@ -286,7 +395,7 @@ private slots:
     void setParamSendsOnlyChanges() {
         Settings s;
         const Controls before = s.controls(false);
-        s.speakers.bass = 0.75;
+        s.speakers.amounts.bass = 0.75;
         s.bypass = true;
         const QString cmd = setParamCommand(s.controls(false), &before);
         QVERIFY(cmd.startsWith("set-param atomicaudio Props"));
@@ -299,6 +408,21 @@ private slots:
 
     // ---- System -------------------------------------------------------------
 
+    void readsVolumeAndWhereSoundGoes() {
+        const QByteArray sinks = R"([
+          {"name":"bt","description":"KEF LSX II","active_port":"","ports":[]},
+          {"name":"laptop","description":"Laptop","active_port":"analog-output-speaker","mute":false,
+           "volume":{"front-left":{"value":39321},"front-right":{"value":39321}},
+           "ports":[{"name":"analog-output-speaker","type":"Speaker"}]}])";
+        const OutputState onSpeakers = parseSinks(sinks, "laptop");
+        QVERIFY(std::fabs(onSpeakers.volumeDb - (-13.31)) < 0.05); // 60% in pactl
+        QVERIFY(!onSpeakers.elsewhere());
+        const OutputState onBluetooth = parseSinks(sinks, "bt");
+        QVERIFY(onBluetooth.elsewhere());
+        QCOMPARE(onBluetooth.defaultDescription, QString("KEF LSX II"));
+        QCOMPARE(parseDefaultSink(R"({"default_sink_name":"bt"})"), QString("bt"));
+    }
+
     void findsTheSpeakersAndTheJack() {
         OutputState speakers = parseSinks(sinksJson("analog-output-speaker"));
         QVERIFY(speakers.found);
@@ -309,12 +433,25 @@ private slots:
         QVERIFY(!parseSinks("not json").found);
     }
 
+    void aCrashedEngineIsNotBelieved() {
+        EngineStatus s;
+        s.running = true;
+        s.pid = QCoreApplication::applicationPid();
+        QVERIFY(s.alive());
+        s.pid = 999999999;
+        QVERIFY(!s.alive());
+    }
+
     void statusRoundTrips() {
         QTemporaryDir dir;
         EngineStatus s;
         s.running = true;
-        s.headphones = true;
-        s.sink = "x";
+        s.output.found = true;
+        s.output.headphones = true;
+        s.output.sink = "x";
+        s.output.volumeDb = -12;
+        s.output.defaultSink = "bt";
+        s.speakerProfile = "generic";
         s.error = "oops";
         QVERIFY(s.write(dir.filePath("run/status.json")));
         QCOMPARE(EngineStatus::read(dir.filePath("run/status.json")).toJson(), s.toJson());
@@ -323,9 +460,32 @@ private slots:
 
     void userUnitRunsTheEngine() {
         const QString unit = service::unitText("/opt/my build/atomicaudio");
-        QVERIFY(unit.startsWith("# Written by atomicaudio"));
+        QVERIFY(unit.startsWith(service::kMarker));
         QVERIFY(unit.contains("ExecStart=\"/opt/my build/atomicaudio\" engine"));
+        QVERIFY(unit.contains("After=pipewire.service pipewire-pulse.service"));
         QVERIFY(unit.contains("WantedBy=pipewire.service"));
+    }
+
+    void userUnitIsRepointedButNeverOneTheUserWrote() {
+        if (QFileInfo::exists(service::packagedUnitPath()))
+            QSKIP("The packaged unit is installed here, so no user unit is written.");
+        QTemporaryDir dir;
+        qputenv("XDG_CONFIG_HOME", dir.path().toUtf8());
+        bool changed = false;
+        QVERIFY(service::ensureUserUnit("/a/atomicaudio", &changed));
+        QVERIFY(changed);
+        QVERIFY(service::ensureUserUnit("/a/atomicaudio", &changed));
+        QVERIFY(!changed);
+        QVERIFY(service::ensureUserUnit("/b/atomicaudio", &changed));
+        QVERIFY(changed);
+        QFile unit(service::userUnitPath());
+        QVERIFY(unit.open(QIODevice::ReadOnly));
+        QVERIFY(unit.readAll().contains("/b/atomicaudio"));
+        unit.close();
+        write(service::userUnitPath(), "[Service]\nExecStart=/mine\n");
+        QVERIFY(service::ensureUserUnit("/c/atomicaudio", &changed));
+        QVERIFY(!changed);
+        qunsetenv("XDG_CONFIG_HOME");
     }
 
     // ---- Backend ------------------------------------------------------------
@@ -338,7 +498,7 @@ private slots:
         backend.setAmount("bass", 0.9);
         QCOMPARE(backend.mode(), QString("custom"));
         QCOMPARE(backend.bass(), 0.9);
-        QTRY_COMPARE(Settings::load(dir.filePath("settings.json")).speakers.bass, 0.9);
+        QTRY_COMPARE(Settings::load(dir.filePath("settings.json")).speakers.amounts.bass, 0.9);
     }
 
     void undoAndRedo() {
@@ -358,6 +518,53 @@ private slots:
         backend.redo();
         QCOMPARE(backend.surround(), 0.2);
         QVERIFY(backend.canRedo());
+    }
+
+    void compareIsNeitherUndoneNorUndoable() {
+        QTemporaryDir dir;
+        Backend backend(dir.filePath("settings.json"), nullptr, false);
+        backend.setAmount("bass", 0.9);
+        backend.toggleBypass();
+        QVERIFY(backend.bypass());
+        backend.undo(); // Undoes the bass change only.
+        QVERIFY(backend.bypass());
+        QVERIFY(backend.bass() != 0.9);
+        QVERIFY(!backend.canUndo());
+    }
+
+    void quittingRightAfterAChangeKeepsIt() {
+        QTemporaryDir dir;
+        {
+            Backend backend(dir.filePath("settings.json"), nullptr, false);
+            backend.setAmount("surround", 0.12);
+        }
+        QCOMPARE(Settings::load(dir.filePath("settings.json")).speakers.amounts.surround, 0.12);
+    }
+
+    void brokenSettingsAreKept() {
+        QTemporaryDir dir;
+        write(dir.filePath("settings.json"), "{ not json");
+        Backend backend(dir.filePath("settings.json"), nullptr, false);
+        QVERIFY(!backend.error().isEmpty());
+        QFile backup(dir.filePath("settings.json.broken"));
+        QVERIFY(backup.open(QIODevice::ReadOnly));
+        QCOMPARE(backup.readAll(), QByteArray("{ not json"));
+    }
+
+    void theEditorFollowsThePlug() {
+        QTemporaryDir dir;
+        Backend backend(dir.filePath("settings.json"), nullptr, false);
+        OutputState out;
+        out.found = true;
+        out.headphones = true;
+        backend.setOutputForTest(out);
+        QVERIFY(backend.editingHeadphones());
+        backend.setEditingHeadphones(false); // Edit the speakers while on headphones.
+        out.headphones = false;
+        backend.setOutputForTest(out); // Unplugged: now they agree...
+        out.headphones = true;
+        backend.setOutputForTest(out); // ...so the next plug-in is followed again.
+        QVERIFY(backend.editingHeadphones());
     }
 
     void eqBandsSnapClampAndGoCustom() {
@@ -383,7 +590,7 @@ private slots:
         backend.setAmount("bass", 0.7);
         backend.setEditingHeadphones(false);
         QCOMPARE(backend.bass(), 0.1);
-        QCOMPARE(backend.settings().headphones.bass, 0.7);
+        QCOMPARE(backend.settings().headphones.amounts.bass, 0.7);
     }
 
     void eqCurvePeaksWhereTheBandIs() {
@@ -405,7 +612,7 @@ private slots:
         const QString path = dir.filePath("settings.json");
         Backend backend(path, nullptr, false);
         Settings s;
-        s.speakers.dialogue = 0.77;
+        s.speakers.amounts.dialogue = 0.77;
         QVERIFY(s.save(path));
         QTRY_COMPARE(backend.dialogue(), 0.77);
     }

@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Measure a laptop's speakers with its own microphone.
+
+Plays short third-octave tones through the built-in speakers, records them
+with the internal microphone, and prints the response relative to 1 kHz, so
+you can write a speaker optimizer curve for your laptop (see README,
+"Add your laptop"). Needs pw-play and arecord; uses only the Python standard
+library.
+
+Turn Atomic Audio off first (`atomicaudio off`) so you measure the bare
+speakers, keep the room quiet, and set the volume to about 50%.
+"""
+
+import argparse
+import math
+import os
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+import wave
+
+RATE = 48000
+FREQS = [63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250,
+         1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000]
+TONE = 0.3   # seconds per tone
+LEAD = 0.3   # silence before and after
+
+
+def write_tones(path, level):
+    frames = bytearray()
+    silence = struct.pack('<hh', 0, 0)
+    frames += silence * int(RATE * LEAD)
+    for f in FREQS:
+        n = int(RATE * TONE)
+        for i in range(n):
+            ramp = min(1.0, i / 480, (n - i) / 480)  # 10 ms fades, no clicks
+            v = int(level * ramp * 32767 * math.sin(2 * math.pi * f * i / RATE))
+            frames += struct.pack('<hh', v, v)
+    frames += silence * int(RATE * LEAD)
+    with wave.open(path, 'wb') as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(bytes(frames))
+
+
+def goertzel(x, f):
+    k = 2 * math.cos(2 * math.pi * f / RATE)
+    s1 = s2 = 0.0
+    for v in x:
+        s1, s2 = v + k * s1 - s2, s1
+    return math.sqrt(max(s1 * s1 + s2 * s2 - k * s1 * s2, 0.0)) / max(len(x), 1)
+
+
+def read_mono(path):
+    with wave.open(path) as w:
+        channels = w.getnchannels()
+        data = w.readframes(w.getnframes())
+    samples = struct.unpack('<%dh' % (len(data) // 2), data)
+    return [sum(samples[i:i + channels]) / channels for i in range(0, len(samples), channels)]
+
+
+def analyze(path):
+    x = read_mono(path)
+    seg = int(RATE * TONE)
+    ref = FREQS.index(1000)
+    # Find where the tones start: the offset where the 1 kHz slot is loudest.
+    best, offset = -1.0, 0
+    for off in range(0, int(RATE * 1.5), 600):
+        chunk = x[off + ref * seg + 3600: off + (ref + 1) * seg - 3600]
+        if len(chunk) < 1000:
+            break
+        v = goertzel(chunk, 1000)
+        if v > best:
+            best, offset = v, off
+    levels = []
+    for j, f in enumerate(FREQS):
+        chunk = x[offset + j * seg + 3600: offset + (j + 1) * seg - 3600]
+        levels.append(20 * math.log10(goertzel(chunk, f) + 1e-9))
+    return levels
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--mic', default=None, help='ALSA capture device, e.g. hw:1,0 (default: first internal one found)')
+    parser.add_argument('--sink', default=None, help='PipeWire sink to play on (default: the default sink)')
+    parser.add_argument('--runs', type=int, default=3, help='measurements to average (default 3)')
+    parser.add_argument('--level', type=float, default=0.25, help='tone level, 0-1 (default 0.25)')
+    args = parser.parse_args()
+
+    if subprocess.run(['systemctl', '--user', 'is-active', '--quiet', 'atomicaudio.service']).returncode == 0:
+        sys.exit('Atomic Audio is on; turn it off first (atomicaudio off) to measure the bare speakers.')
+
+    mic = args.mic
+    if not mic:
+        # The internal mic usually sits on the same card as the speakers.
+        out = subprocess.run(['arecord', '-l'], capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            if line.startswith('card ') and ('Analog' in line or 'ALC' in line):
+                card = line.split()[1].rstrip(':')
+                dev = line.split('device ')[1].split(':')[0]
+                mic = 'hw:%s,%s' % (card, dev)
+                break
+    if not mic:
+        sys.exit('No internal microphone found; pass --mic hw:CARD,DEVICE (see arecord -l).')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tones = os.path.join(tmp, 'tones.wav')
+        write_tones(tones, args.level)
+        seconds = int(len(FREQS) * TONE + 2 * LEAD + 2)
+        runs = []
+        for run in range(args.runs):
+            rec = os.path.join(tmp, 'rec%d.wav' % run)
+            print('Measuring (%d/%d)...' % (run + 1, args.runs), file=sys.stderr)
+            recorder = subprocess.Popen(['arecord', '-q', '-D', mic, '-f', 'S16_LE', '-r', str(RATE), '-c', '2',
+                                         '-d', str(seconds), rec])
+            time.sleep(0.3)
+            play = ['pw-play'] + (['--target', args.sink] if args.sink else []) + [tones]
+            subprocess.run(play, check=True)
+            recorder.wait()
+            runs.append(analyze(rec))
+
+    avg = [sum(r[i] for r in runs) / len(runs) for i in range(len(FREQS))]
+    ref = avg[FREQS.index(1000)]
+    print('\n  Hz      dB vs 1 kHz')
+    for f, level in zip(FREQS, avg):
+        rel = level - ref
+        bar = ('+' * int(min(rel, 20))) if rel > 0 else ('-' * int(min(-rel, 40)))
+        print('%6d   %+6.1f  %s' % (f, rel, bar))
+    spread = max(max(r) - min(r) for r in zip(*runs)) if len(runs) > 1 else 0
+    print('\nLargest difference between runs: %.1f dB (more than ~3 dB means a noisy room).' % spread)
+    product = open('/sys/class/dmi/id/product_name').read().strip() if os.path.exists('/sys/class/dmi/id/product_name') else '?'
+    print('Laptop: %s' % product)
+
+
+if __name__ == '__main__':
+    main()

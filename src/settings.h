@@ -1,24 +1,39 @@
 #pragma once
 
 #include "params.h"
+#include "profiles.h"
 
 #include <QJsonObject>
 #include <QList>
 #include <QString>
 #include <array>
 
-// One sound setup. Speakers and headphones each keep their own, like Dolby
-// does, and the engine switches between them when you plug in.
-struct Profile {
-    QString mode = "dynamic";
+// The five effect amounts a mode sets.
+struct Amounts {
     double leveler = 0.4;
     double dialogue = 0.3;
     double surround = 0.45;
     double bass = 0.55;
     double loudness = 0.5;
+
+    bool operator==(const Amounts &o) const;
+    // The amount for a key ("bass", ...), or nullptr for an unknown key.
+    double *find(const QString &key);
+    static const QStringList &keys();
+};
+
+// One sound setup. Speakers and headphones each keep their own, like Dolby
+// does, and the engine switches between them when you plug in. Custom mode
+// and the custom EQ keep their own values, so trying a preset and coming
+// back never loses your mix.
+struct Profile {
+    QString mode = "dynamic";
+    Amounts amounts;
+    Amounts customAmounts;
     bool tuning = true;
     QString eqPreset = "flat";
     std::array<double, atomic::EqBands> eq{};
+    std::array<double, atomic::EqBands> customEq{};
 
     bool operator==(const Profile &o) const;
     bool operator!=(const Profile &o) const { return !(*this == o); }
@@ -26,7 +41,7 @@ struct Profile {
 
 struct Mode {
     QString id;
-    double leveler, dialogue, surround, bass, loudness;
+    Amounts amounts;
 };
 
 struct EqPreset {
@@ -40,6 +55,9 @@ class Settings {
 public:
     bool bypass = false;
     double ceiling = -1.0;
+    // "auto" picks the optimizer curve from the laptop model; otherwise an id
+    // from kSpeakerProfiles.
+    QString speakerProfile = "auto";
     Profile speakers = defaultProfile(false);
     Profile headphones = defaultProfile(true);
 
@@ -52,16 +70,26 @@ public:
     static const EqPreset *findEqPreset(const QString &id);
     static Profile defaultProfile(bool forHeadphones);
 
-    // Sets the effect amounts of a built-in mode; "custom" keeps them.
+    // Sets the effect amounts of a mode; "custom" brings back your own.
     static bool applyMode(Profile &profile, const QString &id, bool forHeadphones);
+    // Sets an EQ preset; "custom" brings back your own curve.
     static bool applyEqPreset(Profile &profile, const QString &id);
+    // Changes one amount by hand, which makes the mix custom.
+    static bool setAmount(Profile &profile, const QString &key, double value);
+    // Changes one EQ band by hand, which makes the curve custom.
+    static bool setEqBand(Profile &profile, int band, double db);
+
+    // The optimizer curve to use on a laptop with this DMI product name.
+    int resolveSpeakerProfile(const QString &productName) const;
 
     QJsonObject toJson() const;
     static Settings fromJson(const QJsonObject &object);
     static Settings load(const QString &path, QString *error = nullptr);
     bool save(const QString &path, QString *error = nullptr) const;
 
-    Controls controls(bool forHeadphones) const;
+    // What the plugin's controls should be for this output, optimizer curve
+    // and output volume (dB, 0 = full).
+    Controls controls(bool forHeadphones, int speakerProfile = atomic::kGenericProfile, double volumeDb = 0) const;
 };
 
 // The PipeWire config the engine runs: a filter-chain smart filter that

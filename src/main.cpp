@@ -28,7 +28,7 @@ int main(int argc, char *argv[]) {
     QGuiApplication app(argc, argv);
     app.setApplicationName("atomicaudio");
     app.setApplicationDisplayName("Atomic Audio");
-    app.setApplicationVersion("0.1.0");
+    app.setApplicationVersion(APP_VERSION);
 
     // Matches the window to atomicaudio.desktop, so the compositor (Wayland
     // app_id) and the launcher pick up the installed icon.

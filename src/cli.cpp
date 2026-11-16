@@ -27,7 +27,7 @@ QTextStream &err() {
     return s;
 }
 
-const QStringList kAmounts = {"surround", "dialogue", "bass", "leveler", "loudness"};
+const QStringList &kAmounts = Amounts::keys();
 
 int fail(const QString &message) {
     err() << "atomicaudio: " << message << Qt::endl;
@@ -44,7 +44,8 @@ void usage(QTextStream &s) {
          "  atomicaudio mode <name>            dynamic, movie, music, game, voice or custom\n"
          "  atomicaudio set <effect> <0-100>   surround, dialogue, bass, leveler or loudness\n"
          "  atomicaudio set tuning <on|off>    The speaker optimizer\n"
-         "  atomicaudio eq <preset>            flat, open, rich or focused\n"
+         "  atomicaudio set speakers <curve>   auto, generic or rog-g14-2024 (the optimizer's curve)\n"
+         "  atomicaudio eq <preset>            flat, open, rich, focused or custom (your own)\n"
          "  atomicaudio eq <10 gains in dB>    31 Hz … 16 kHz, -12 to 12\n"
          "  atomicaudio bypass [on|off]        Hear the original sound (toggles without an argument)\n"
          "  atomicaudio reset                  Back to the defaults\n"
@@ -60,7 +61,10 @@ bool targetHeadphones(QStringList &args) {
         return true;
     if (args.removeAll("--speakers"))
         return false;
-    return EngineStatus::read(paths::statusFile()).headphones;
+    const EngineStatus status = EngineStatus::read(paths::statusFile());
+    if (status.running && status.alive())
+        return status.output.headphones;
+    return queryOutput(2000).headphones;
 }
 
 bool parseOnOff(const QString &v, bool *ok) {
@@ -81,12 +85,20 @@ int save(const Settings &s) {
 }
 
 QJsonObject statusJson() {
-    const EngineStatus status = EngineStatus::read(paths::statusFile());
-    QJsonObject o = Settings::load(paths::settingsFile()).toJson();
+    EngineStatus status = EngineStatus::read(paths::statusFile());
+    if (status.running && !status.alive())
+        status = EngineStatus();
+    const OutputState output = status.running ? status.output : queryOutput(2000);
+    const Settings settings = Settings::load(paths::settingsFile());
+    QJsonObject o = settings.toJson();
     o.insert("engine", service::isActive());
     o.insert("filterRunning", status.running);
-    o.insert("output", status.headphones ? "headphones" : "speakers");
-    o.insert("sink", status.sink);
+    o.insert("output", output.headphones ? "headphones" : "speakers");
+    o.insert("sink", output.sink);
+    o.insert("playingElsewhere", output.elsewhere());
+    if (output.elsewhere())
+        o.insert("defaultSink", output.defaultSink);
+    o.insert("optimizerCurve", atomic::kSpeakerProfiles[settings.resolveSpeakerProfile(productName())].id);
     if (!status.error.isEmpty())
         o.insert("error", status.error);
     return o;
@@ -101,14 +113,19 @@ int status(bool json) {
     }
     const bool hp = o.value("output").toString() == "headphones";
     const QJsonObject p = o.value(hp ? "headphones" : "speakers").toObject();
+    const int curve = atomic::profileIndex(o.value("optimizerCurve").toString().toUtf8().constData());
     out() << "Engine:    " << (o.value("engine").toBool() ? (o.value("filterRunning").toBool() ? "on" : "starting")
                                                            : "off")
           << (o.value("bypass").toBool() ? " (bypassed)" : "") << "\n";
     out() << "Output:    " << (hp ? "headphones" : "speakers") << "  " << o.value("sink").toString() << "\n";
+    if (o.value("playingElsewhere").toBool())
+        out() << "           sound is going to " << o.value("defaultSink").toString()
+              << ", which Atomic Audio doesn't process\n";
     out() << "Mode:      " << p.value("mode").toString() << "\n";
     for (const QString &k : kAmounts)
         out() << QStringLiteral("%1 %2%\n").arg(k.left(1).toUpper() + k.mid(1) + ":", -10).arg(percent(p.value(k).toDouble()));
-    out() << "Optimizer: " << (p.value("tuning").toBool() ? "on" : "off") << "\n";
+    out() << "Optimizer: " << (p.value("tuning").toBool() ? "on" : "off") << " ("
+          << (curve >= 0 ? atomic::kSpeakerProfiles[curve].name : "?") << ")\n";
     out() << "EQ:        " << p.value("eqPreset").toString() << "\n";
     if (o.contains("error"))
         out() << "Error:     " << o.value("error").toString() << "\n";
@@ -118,30 +135,22 @@ int status(bool json) {
 
 int onOff(bool on) {
     QString error;
-    if (on && !service::unitInstalled()) {
-        if (!service::writeUserUnit(QCoreApplication::applicationFilePath(), &error))
-            return fail(error);
+    bool changed = false;
+    if (on && !service::ensureUserUnit(QCoreApplication::applicationFilePath(), &changed, &error))
+        return fail(error);
+    if (changed)
         service::run({"daemon-reload"});
-    }
     if (!service::run({on ? "enable" : "disable", "--now", service::kUnit}, &error))
         return fail(error);
     out() << "Atomic Audio is " << (on ? "on" : "off") << Qt::endl;
     return 0;
 }
 
+void quitOnSignals(QObject *owner);
+
 int runEngine() {
     // SIGTERM from systemd quits the event loop, so the child filter stops too.
-    static int pipeFds[2];
-    if (::pipe(pipeFds) != 0)
-        return fail("pipe failed");
-    auto handler = [](int) {
-        const char c = 1;
-        [[maybe_unused]] auto r = ::write(pipeFds[1], &c, 1);
-    };
-    std::signal(SIGTERM, handler);
-    std::signal(SIGINT, handler);
-    QSocketNotifier notifier(pipeFds[0], QSocketNotifier::Read);
-    QObject::connect(&notifier, &QSocketNotifier::activated, qApp, &QCoreApplication::quit);
+    quitOnSignals(qApp);
 
     Engine engine;
     QString error;
@@ -212,22 +221,31 @@ private:
         s += QStringLiteral("  %1Optimizer  %2\x1b[0m\r\n\r\n")
                  .arg(m_row == 5 ? "\x1b[1m> " : "  ", b.tuning() ? "on" : "off");
 
-        // EQ as ten vertical bars from -12 to +12 dB.
+        // EQ as ten vertical bars, one row per 3 dB, each band rounded to the
+        // nearest row so a gentle +2 dB still shows.
         const QList<qreal> eq = b.eq();
-        s += QStringLiteral("  EQ: %1%2\x1b[0m\r\n").arg(m_row == 6 ? "\x1b[1m" : "", b.eqPreset());
-        for (int level = 6; level >= -6; level -= 2) {
+        s += QStringLiteral("  EQ: %1%2%3\x1b[0m\r\n")
+                 .arg(m_row == 6 ? "\x1b[1m" : "", b.eqPreset(),
+                      m_row == 6 ? QStringLiteral("   band %1: %2 dB  (tab/,. pick, ←→ adjust)")
+                                       .arg(int(atomic::kEqFreqs[m_band]))
+                                       .arg(eq.value(m_band), 0, 'f', 1)
+                                 : QString());
+        for (int level = 12; level >= -12; level -= 3) {
             s += "  ";
             for (int band = 0; band < eq.size(); ++band) {
-                const double g = eq[band] / 2.0;
-                const bool fill = level > 0 ? g >= level : (level < 0 ? g <= level : true);
+                const double g = eq[band];
+                const bool fill = level > 0 ? g >= level - 1.5 : (level < 0 ? g <= level + 1.5 : true);
                 const bool sel = m_row == 6 && band == m_band;
-                s += QString(sel ? "\x1b[1m" : "") + (level == 0 ? "─────" : fill ? " ███ " : "     ") + "\x1b[0m";
+                s += QString(sel ? "\x1b[1;33m" : "") + (level == 0 ? "─────" : fill ? " ███ " : "     ") + "\x1b[0m";
             }
             s += "\r\n";
         }
         s += "   31   62  125  250  500   1k   2k   4k   8k  16k\r\n\r\n";
         s += "\x1b[90m  ↑↓ select  ←→ adjust  1-6 mode  e EQ preset  a compare  h speakers/headphones\r\n"
              "  space on/off  u undo  r redo  q quit\x1b[0m\r\n";
+        if (b.playingElsewhere())
+            s += "\r\n  \x1b[33mSound is going to " + b.elsewhereDescription() +
+                 ", which Atomic Audio doesn't process.\x1b[0m\r\n";
         if (!b.error().isEmpty())
             s += "\r\n  \x1b[31m" + b.error() + "\x1b[0m\r\n";
         out() << s;
@@ -292,11 +310,29 @@ private:
     int m_band = 0;
 };
 
+// Signals quit the event loop instead of killing the process, so the
+// terminal always gets its settings back.
+void quitOnSignals(QObject *owner) {
+    static int pipeFds[2] = {-1, -1};
+    if (pipeFds[0] < 0 && ::pipe(pipeFds) != 0)
+        return;
+    auto handler = [](int) {
+        const char c = 1;
+        [[maybe_unused]] auto r = ::write(pipeFds[1], &c, 1);
+    };
+    std::signal(SIGTERM, handler);
+    std::signal(SIGINT, handler);
+    std::signal(SIGHUP, handler);
+    auto *notifier = new QSocketNotifier(pipeFds[0], QSocketNotifier::Read, owner);
+    QObject::connect(notifier, &QSocketNotifier::activated, qApp, &QCoreApplication::quit);
+}
+
 int runTui() {
     if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO))
         return fail("tui needs a terminal");
     Backend backend;
     Tui tui(backend);
+    quitOnSignals(&tui);
     return QCoreApplication::exec();
 }
 
@@ -313,7 +349,7 @@ bool handles(const QStringList &args) {
 int run(int argc, char *argv[]) {
     QCoreApplication app(argc, argv);
     app.setApplicationName("atomicaudio");
-    app.setApplicationVersion("0.1.0");
+    app.setApplicationVersion(APP_VERSION);
 
     QStringList args = app.arguments().mid(1);
     const QString command = args.takeFirst();
@@ -356,23 +392,23 @@ int run(int argc, char *argv[]) {
             p.tuning = parseOnOff(args[1], &ok);
             return ok ? save(s) : fail("tuning is on or off");
         }
+        if (key == "speakers" || key == "curve") {
+            if (args[1] != "auto" && atomic::profileIndex(args[1].toUtf8().constData()) < 0)
+                return fail("speakers is auto, generic or rog-g14-2024");
+            s.speakerProfile = args[1];
+            return save(s);
+        }
         bool ok;
         const double v = args[1].toDouble(&ok);
         if (!ok || v < 0 || v > 100 || !kAmounts.contains(key))
             return fail("usage: atomicaudio set <surround|dialogue|bass|leveler|loudness> <0-100>");
-        double *slot = key == "surround" ? &p.surround
-                       : key == "dialogue" ? &p.dialogue
-                       : key == "bass"     ? &p.bass
-                       : key == "leveler"  ? &p.leveler
-                                           : &p.loudness;
-        *slot = v / 100.0;
-        p.mode = "custom";
+        Settings::setAmount(p, key, v / 100.0);
         return save(s);
     }
     if (command == "eq") {
         if (args.size() == 1) {
-            if (!Settings::applyEqPreset(p, args.first()) || args.first() == "custom")
-                return fail("eq preset must be one of flat, open, rich, focused");
+            if (!Settings::applyEqPreset(p, args.first()))
+                return fail("eq preset must be one of flat, open, rich, focused, custom");
             return save(s);
         }
         if (args.size() != atomic::EqBands)
@@ -382,9 +418,8 @@ int run(int argc, char *argv[]) {
             const double g = args[i].toDouble(&ok);
             if (!ok || g < -12 || g > 12)
                 return fail(QStringLiteral("gain %1 must be between -12 and 12 dB").arg(args[i]));
-            p.eq[i] = g;
+            Settings::setEqBand(p, i, g);
         }
-        p.eqPreset = "custom";
         return save(s);
     }
     if (command == "bypass") {

@@ -86,8 +86,7 @@ void Analyzer::restart() {
     m_process.start("pw-record", {"--raw", "--format", "f32", "--rate", "48000", "--channels", "2", "--latency", "15ms",
                                   "-P",
                                   "{ stream.capture.sink = true node.passive = true node.dont-fallback = true "
-                                  "node.dont-reconnect = true node.name = atomicaudio.analyzer "
-                                  "media.role = DSP }",
+                                  "node.dont-reconnect = true node.name = atomicaudio.analyzer }",
                                   "--target", m_target, "-"});
     m_frame.start();
 }
@@ -150,8 +149,14 @@ void Analyzer::analyze() {
             next[b] = v > next[b] ? v : next[b] * 0.86 + v * 0.14;
         }
     } else {
-        for (auto &v : next)
-            v *= 0.82;
+        // Nothing playing: let the bars fall, then stop redrawing at all.
+        bool any = false;
+        for (auto &v : next) {
+            v = v < 0.002 ? 0.0 : v * 0.82;
+            any = any || v > 0;
+        }
+        if (!any && !m_receiving && m_bands == next)
+            return;
     }
     m_receiving = fresh;
     m_bands = next;
