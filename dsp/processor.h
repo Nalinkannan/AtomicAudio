@@ -40,6 +40,7 @@ private:
     void smoothParams(unsigned frames);
     void updateFilters();
     void processChunk(const float *inL, const float *inR, float *outL, float *outR, unsigned n);
+    double truePeak(double l, double r);
     void limit(double &l, double &r, double ceiling);
 
     double m_fs;
@@ -106,7 +107,15 @@ private:
 
     // Lookahead limiter: hold-min of the needed gain, release, then a box
     // filter as long as the lookahead so the gain is down before the peak.
-    int m_look = 96;
+    // The detector looks at the waveform 4x oversampled, so peaks that fall
+    // between samples (and come back when the DAC reconstructs them) count
+    // too. Interpolating needs a few samples past the peak, which the audio
+    // delay adds on top of the lookahead: m_look = m_attack + kTpDelay.
+    static constexpr int kTpOver = 4, kTpTaps = 12, kTpDelay = kTpTaps / 2 - 1;
+    std::array<std::array<double, kTpTaps>, kTpOver - 1> m_tpCoef{};
+    std::array<std::array<double, 2 * kTpTaps>, 2> m_tpHist{};
+    int m_tpPos = 0;
+    int m_attack = 96, m_look = 96 + kTpDelay;
     std::vector<double> m_limDelay[2];
     std::vector<double> m_box;
     std::vector<double> m_dqVal;

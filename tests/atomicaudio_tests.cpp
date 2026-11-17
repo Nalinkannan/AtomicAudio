@@ -49,6 +49,26 @@ double sineGainDb(Processor &p, double freq, double amp = 0.1, bool antiphase = 
     return 10 * std::log10(out / in);
 }
 
+// Peak of the reconstructed waveform: 16x oversampling with a long
+// Blackman-windowed sinc, far finer than the limiter's own detector.
+double truePeak(const std::vector<float> &x, size_t from) {
+    constexpr int kOver = 16, kHalf = 64;
+    double peak = 0;
+    for (size_t n = std::max<size_t>(from, kHalf); n + kHalf < x.size(); ++n)
+        for (int k = 0; k < kOver; ++k) {
+            const double frac = double(k) / kOver;
+            double sum = 0;
+            for (int i = -kHalf + 1; i <= kHalf; ++i) {
+                const double t = i - frac;
+                const double sinc = t == 0 ? 1.0 : std::sin(M_PI * t) / (M_PI * t);
+                const double w = 0.42 + 0.5 * std::cos(M_PI * t / kHalf) + 0.08 * std::cos(2 * M_PI * t / kHalf);
+                sum += x[n + i] * sinc * w;
+            }
+            peak = std::max(peak, std::fabs(sum));
+        }
+    return peak;
+}
+
 QByteArray sinksJson(const QString &activePort) {
     return QStringLiteral(R"([
       {"name":"alsa_output.hdmi","description":"HDMI","active_port":"hdmi-output-0",
@@ -214,6 +234,54 @@ private slots:
         }
         QVERIFY(peak <= ceiling + 1e-6);
         QVERIFY(peak > ceiling * 0.9); // It is actually loud.
+    }
+
+    void limiterCatchesIntersamplePeaks() {
+        // A 12 kHz tone has four samples per cycle. Sampled 45 degrees off
+        // its crests every sample sits at 0.707 of the peak, so limiting
+        // samples alone lets the waveform reach 3 dB over the ceiling once
+        // it is reconstructed. The crossovers turn the phase on the way, so
+        // try a spread of them and keep the worst.
+        const double ceiling = std::pow(10.0, -1.0 / 20.0);
+        const int n = 256 * 96;
+        double worst = 0;
+        for (int k = 0; k < 8; ++k) {
+            Processor p(kFs);
+            flatten(p);
+            p.setParam(Ceiling, -1);
+            std::vector<float> in(n), out(n), other(n);
+            for (int i = 0; i < n; ++i)
+                in[i] = float(2.0 * std::sin(2 * M_PI * 12000 * i / kFs + k * M_PI / 16));
+            for (int i = 0; i < n; i += 256)
+                p.process(&in[i], &in[i], &out[i], &other[i], 256);
+            worst = std::max(worst, truePeak(out, n / 2));
+        }
+        QVERIFY2(20 * std::log10(worst / ceiling) < 0.2, qPrintable(QString::number(20 * std::log10(worst), 'f', 2)));
+        QVERIFY(worst > ceiling * 0.9);
+    }
+
+    void limiterHoldsTheCeilingOnRandomMusic() {
+        // Loud, bright noise through every effect: the reconstructed output
+        // stays at the ceiling, give or take what 4x oversampling can miss.
+        Processor p(kFs);
+        for (int i = 0; i < ParamCount; ++i)
+            p.setParam(i, kParams[i].max);
+        p.setParam(Bypass, 0);
+        p.setParam(Headphones, 0);
+        p.setParam(Ceiling, -1);
+        const double ceiling = std::pow(10.0, -1.0 / 20.0);
+        std::mt19937 rng(3);
+        std::normal_distribution<float> noise(0, 0.6f);
+        const int n = int(kFs);
+        std::vector<float> l(n), r(n), ol(n), orr(n);
+        for (int i = 0; i < n; ++i) {
+            l[i] = noise(rng);
+            r[i] = noise(rng);
+        }
+        for (int i = 0; i < n; i += 333)
+            p.process(&l[i], &r[i], &ol[i], &orr[i], unsigned(std::min(333, n - i)));
+        const double tp = std::max(truePeak(ol, n / 4), truePeak(orr, n / 4));
+        QVERIFY2(20 * std::log10(tp / ceiling) < 0.3, qPrintable(QString::number(20 * std::log10(tp), 'f', 2)));
     }
 
     void bypassIsTheInputDelayed() {

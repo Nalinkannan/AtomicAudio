@@ -56,7 +56,8 @@ Processor::Processor(double sampleRate) : m_fs(sampleRate > 1000 ? sampleRate : 
     }
 
     const double fs = m_fs;
-    m_look = std::max(8, int(std::lround(0.002 * fs)));
+    m_attack = std::max(8, int(std::lround(0.002 * fs)));
+    m_look = m_attack + kTpDelay;
     m_xtDelay = std::clamp(int(std::lround(70e-6 * fs)), 1, kRing - 1);
     m_cfDelay = std::clamp(int(std::lround(300e-6 * fs)), 1, kRing - 1);
 
@@ -100,14 +101,43 @@ Processor::Processor(double sampleRate) : m_fs(sampleRate > 1000 ? sampleRate : 
             m_ap[ch][i].g = 0.6;
         }
 
+    // True-peak interpolator: for each point a quarter, half and three
+    // quarters of the way to the next sample, a Kaiser-windowed sinc over
+    // the 12 nearest samples. Beta 3 reads a touch high (never low) up to
+    // 0.4 fs, so the error only ever errs toward limiting a little more.
+    {
+        constexpr double beta = 3.0, half = kTpTaps / 2;
+        auto i0 = [](double x) {
+            double sum = 1, term = 1;
+            for (int k = 1; k < 30; ++k) {
+                term *= (x / (2 * k)) * (x / (2 * k));
+                sum += term;
+            }
+            return sum;
+        };
+        for (int k = 1; k < kTpOver; ++k) {
+            double total = 0;
+            for (int i = 0; i < kTpTaps; ++i) {
+                const double t = double(k) / kTpOver - (i - kTpDelay); // tap i is sample m - kTpDelay + i
+                const double sinc = std::sin(M_PI * t) / (M_PI * t);
+                const double u = t / half;
+                const double w = i0(beta * std::sqrt(std::max(0.0, 1.0 - u * u))) / i0(beta);
+                m_tpCoef[k - 1][i] = sinc * w;
+                total += sinc * w;
+            }
+            for (double &c : m_tpCoef[k - 1])
+                c /= total; // Unity at DC.
+        }
+    }
+
     m_relCoef = timeCoef(1, 0.08, fs);
     for (int ch = 0; ch < 2; ++ch) {
         m_limDelay[ch].assign(m_look, 0.0);
         m_dry[ch].assign(m_look, 0.0);
     }
-    m_box.assign(m_look, 1.0);
+    m_box.assign(m_attack, 1.0);
     size_t cap = 1;
-    while (cap < size_t(m_look) + 4)
+    while (cap < size_t(m_attack) + 4)
         cap <<= 1;
     m_dqVal.assign(cap, 1.0);
     m_dqIdx.assign(cap, 0);
@@ -155,8 +185,11 @@ void Processor::reset() {
     m_ringPos = 0;
     m_bandMs.fill(0);
     m_bandGrDb.fill(0);
+    for (auto &h : m_tpHist)
+        h.fill(0);
+    m_tpPos = 0;
     std::fill(m_box.begin(), m_box.end(), 1.0);
-    m_boxSum = m_look;
+    m_boxSum = m_attack;
     m_boxPos = m_limPos = 0;
     m_dqHead = m_dqTail = 0;
     m_limIndex = 0;
@@ -252,17 +285,42 @@ void Processor::updateFilters() {
     m_applied = m_smooth;
 }
 
+// Highest point of the reconstructed waveform, both channels, over the span
+// from sample m to m+1, where m is kTpDelay + 1 samples back: the two samples
+// themselves and the three points between them.
+double Processor::truePeak(double l, double r) {
+    double peak = 0;
+    for (int ch = 0; ch < 2; ++ch) {
+        auto &hist = m_tpHist[ch];
+        // Written twice, so the last kTpTaps samples are always contiguous.
+        hist[m_tpPos] = hist[m_tpPos + kTpTaps] = ch == 0 ? l : r;
+        const double *x = &hist[m_tpPos + 1]; // Oldest first; x[kTpDelay] is sample m.
+        peak = std::max({peak, std::fabs(x[kTpDelay]), std::fabs(x[kTpDelay + 1])});
+        for (const auto &coef : m_tpCoef) {
+            double v = 0;
+            for (int i = 0; i < kTpTaps; ++i)
+                v += coef[i] * x[i];
+            peak = std::max(peak, std::fabs(v));
+        }
+    }
+    if (++m_tpPos == kTpTaps)
+        m_tpPos = 0;
+    return peak;
+}
+
 void Processor::limit(double &l, double &r, double ceiling) {
-    const double peak = std::max(std::fabs(l), std::fabs(r));
+    const double peak = truePeak(l, r);
     const double need = peak > ceiling ? ceiling / peak : 1.0;
 
-    // Sliding minimum over the last look+1 samples (monotonic deque).
+    // Sliding minimum over the last attack+1 samples (monotonic deque). The
+    // span `need` covers reaches the delay-line output m_attack samples from
+    // now, so every box-filter step leading up to it already sees it.
     while (m_dqTail != m_dqHead && m_dqVal[(m_dqTail - 1) & m_dqMask] >= need)
         --m_dqTail;
     m_dqVal[m_dqTail & m_dqMask] = need;
     m_dqIdx[m_dqTail & m_dqMask] = m_limIndex;
     ++m_dqTail;
-    while (m_dqIdx[m_dqHead & m_dqMask] < m_limIndex - m_look)
+    while (m_dqIdx[m_dqHead & m_dqMask] < m_limIndex - m_attack)
         ++m_dqHead;
     const double held = m_dqVal[m_dqHead & m_dqMask];
     ++m_limIndex;
@@ -276,7 +334,7 @@ void Processor::limit(double &l, double &r, double ceiling) {
 
     m_boxSum += m_relState - m_box[m_boxPos];
     m_box[m_boxPos] = m_relState;
-    if (++m_boxPos == size_t(m_look)) {
+    if (++m_boxPos == size_t(m_attack)) {
         // Re-add from scratch once per lap so rounding never accumulates.
         m_boxPos = 0;
         double sum = 0;
@@ -284,7 +342,7 @@ void Processor::limit(double &l, double &r, double ceiling) {
             sum += v;
         m_boxSum = sum;
     }
-    const double gain = std::min(1.0, m_boxSum / m_look);
+    const double gain = std::min(1.0, m_boxSum / m_attack);
     m_lastGain = gain;
 
     const double dl = m_limDelay[0][m_limPos], dr = m_limDelay[1][m_limPos];

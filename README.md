@@ -233,16 +233,20 @@ flowchart LR
 | Dialogue | Presence boost and low-mid cut on the mid (center) signal only |
 | Surround | Side signal widened above 300 Hz, decorrelated ambience, and crosstalk cancellation on speakers or crossfeed on headphones |
 | Loudness | Linkwitz-Riley split at 200 Hz and 3 kHz, a soft-knee compressor per band, phase-matched so the bands sum flat |
-| Limiter | 2 ms lookahead, hold-min plus box filter, so peaks never pass the ceiling |
+| Limiter | 2 ms lookahead, hold-min plus box filter, with a 4× oversampled true-peak detector so peaks between samples are caught too |
 
 ## Performance and safety
 
 - **CPU**: about 1.7% of one core.
-- **Latency**: 2 ms, the limiter's lookahead.
+- **Latency**: 2.1 ms, the limiter's lookahead plus 5 samples for the
+  true-peak interpolator.
 - **Transparent when flat**: with every effect at zero, the output is within
   0.05 dB of the input from 30 Hz to 18 kHz. Bypass is bit-exact.
 - **Never clips**: the limiter holds peaks at −1 dBFS whatever the settings,
-  checked with full-scale noise and every effect at maximum.
+  checked with full-scale noise and every effect at maximum. It limits the
+  reconstructed waveform, not just the samples: a 12 kHz tone sampled
+  between its crests stays under −0.9 dBTP, where sample-peak limiting let
+  it reach +1.85 dBTP.
 - **No pumping**: with the three-band loudness stage, a bass hit no longer
   pushes voices down. Measured: 0.0 dB of ducking, where a single-band stage
   ducks voices by 5.9 dB.
