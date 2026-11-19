@@ -35,7 +35,7 @@ int fail(const QString &message) {
 }
 
 void usage(QTextStream &s) {
-    s << "Atomic Audio — full, wide, loud sound from your laptop speakers\n\n"
+    s << "Atomic Audio — full, wide, loud sound from your laptop, headphones and speakers\n\n"
          "Usage:\n"
          "  atomicaudio [open]                 Open the window\n"
          "  atomicaudio tui                    Control it from the terminal\n"
@@ -51,21 +51,21 @@ void usage(QTextStream &s) {
          "  atomicaudio bypass [on|off]        Hear the original sound (toggles without an argument)\n"
          "  atomicaudio reset                  Back to the defaults\n"
          "  atomicaudio engine                 Run the engine (the systemd service does this)\n\n"
-         "Add --speakers or --headphones to change that output's sound; otherwise the one\n"
-         "playing now is changed.\n";
+         "Add --speakers (the laptop's own), --headphones or --external (other speakers:\n"
+         "Bluetooth, HDMI, USB) to change that output's sound; otherwise the one playing\n"
+         "now is changed.\n";
     s.flush();
 }
 
 // Which profile a command edits: the flag, else the output in use.
-bool targetHeadphones(QStringList &args) {
-    if (args.removeAll("--headphones"))
-        return true;
-    if (args.removeAll("--speakers"))
-        return false;
+OutputKind targetKind(QStringList &args) {
+    for (OutputKind kind : kOutputKinds)
+        if (args.removeAll("--" + outputKindId(kind)))
+            return kind;
     const EngineStatus status = EngineStatus::read(paths::statusFile());
     if (status.running && status.alive())
-        return status.output.headphones;
-    return queryOutput(2000).headphones;
+        return status.output.kind;
+    return queryOutput(2000).kind;
 }
 
 bool parseOnOff(const QString &v, bool *ok) {
@@ -94,8 +94,9 @@ QJsonObject statusJson() {
     QJsonObject o = settings.toJson();
     o.insert("engine", service::isActive());
     o.insert("filterRunning", status.running);
-    o.insert("output", output.headphones ? "headphones" : "speakers");
+    o.insert("output", outputKindId(output.kind));
     o.insert("sink", output.sink);
+    o.insert("description", output.description);
     o.insert("playingElsewhere", output.elsewhere());
     if (output.elsewhere())
         o.insert("defaultSink", output.defaultSink);
@@ -112,21 +113,23 @@ int status(bool json) {
         out().flush();
         return 0;
     }
-    const bool hp = o.value("output").toString() == "headphones";
-    const QJsonObject p = o.value(hp ? "headphones" : "speakers").toObject();
+    const QString kind = o.value("output").toString();
+    const QJsonObject p = o.value(kind).toObject();
     const int curve = atomic::profileIndex(o.value("optimizerCurve").toString().toUtf8().constData());
     out() << "Engine:    " << (o.value("engine").toBool() ? (o.value("filterRunning").toBool() ? "on" : "starting")
                                                            : "off")
           << (o.value("bypass").toBool() ? " (bypassed)" : "") << "\n";
-    out() << "Output:    " << (hp ? "headphones" : "speakers") << "  " << o.value("sink").toString() << "\n";
+    const QString device = o.value("description").toString();
+    out() << "Output:    " << kind << "  " << (device.isEmpty() ? o.value("sink").toString() : device) << "\n";
     if (o.value("playingElsewhere").toBool())
         out() << "           sound is going to " << o.value("defaultSink").toString()
-              << ", which Atomic Audio doesn't process\n";
+              << ", a virtual output Atomic Audio doesn't process\n";
     out() << "Mode:      " << p.value("mode").toString() << "\n";
     for (const QString &k : kAmounts)
         out() << QStringLiteral("%1 %2%\n").arg(k.left(1).toUpper() + k.mid(1) + ":", -10).arg(percent(p.value(k).toDouble()));
-    out() << "Optimizer: " << (p.value("tuning").toBool() ? "on" : "off") << " ("
-          << (curve >= 0 ? atomic::kSpeakerProfiles[curve].name : "?") << ")\n";
+    if (kind == "speakers")
+        out() << "Optimizer: " << (p.value("tuning").toBool() ? "on" : "off") << " ("
+              << (curve >= 0 ? atomic::kSpeakerProfiles[curve].name : "?") << ")\n";
     out() << "EQ:        " << p.value("eqPreset").toString() << "\n";
     if (o.contains("error"))
         out() << "Error:     " << o.value("error").toString() << "\n";
@@ -199,7 +202,7 @@ private:
         if (b.bypass())
             s += "  \x1b[33m[comparing: original sound]\x1b[0m";
         s += QStringLiteral("   output: %1   editing: %2\r\n\r\n")
-                 .arg(b.headphonesActive() ? "headphones" : "speakers", b.editingHeadphones() ? "headphones" : "speakers");
+                 .arg(b.outputKind(), b.editing());
 
         s += "  ";
         const QStringList modes = b.modeIds();
@@ -220,7 +223,10 @@ private:
                      .arg(percent(values[i]), 3);
         }
         s += QStringLiteral("  %1Optimizer  %2\x1b[0m\r\n\r\n")
-                 .arg(m_row == 5 ? "\x1b[1m> " : "  ", b.tuning() ? "on" : "off");
+                 .arg(m_row == 5 ? "\x1b[1m> " : "  ",
+                      b.editingKind() != OutputKind::Speakers ? "\x1b[90monly for the built-in speakers"
+                      : b.tuning()                            ? "on"
+                                                              : "off");
 
         // EQ as ten vertical bars, one row per 3 dB, each band rounded to the
         // nearest row so a gentle +2 dB still shows.
@@ -242,11 +248,11 @@ private:
             s += "\r\n";
         }
         s += "   31   62  125  250  500   1k   2k   4k   8k  16k\r\n\r\n";
-        s += "\x1b[90m  ↑↓ select  ←→ adjust  1-6 mode  e EQ preset  a compare  h speakers/headphones\r\n"
+        s += "\x1b[90m  ↑↓ select  ←→ adjust  1-6 mode  e EQ preset  a compare  h output\r\n"
              "  space on/off  u undo  r redo  q quit\x1b[0m\r\n";
         if (b.playingElsewhere())
             s += "\r\n  \x1b[33mSound is going to " + b.elsewhereDescription() +
-                 ", which Atomic Audio doesn't process.\x1b[0m\r\n";
+                 ", a virtual output Atomic Audio doesn't process.\x1b[0m\r\n";
         if (!b.error().isEmpty())
             s += "\r\n  \x1b[31m" + b.error() + "\x1b[0m\r\n";
         out() << s;
@@ -285,7 +291,7 @@ private:
             case ' ': m_backend.toggleEngine(); break;
             case 'a': case 'A': m_backend.toggleBypass(); break;
             case 'e': case 'E': m_backend.cycleEqPreset(); break;
-            case 'h': case 'H': m_backend.setEditingHeadphones(!m_backend.editingHeadphones()); break;
+            case 'h': case 'H': m_backend.editNextOutput(); break;
             case 'u': m_backend.undo(); break;
             case 'r': m_backend.redo(); break;
             case '\t': if (m_row == 6) m_band = (m_band + 1) % 10; break;
@@ -372,15 +378,15 @@ int run(int argc, char *argv[]) {
     if (command == "on" || command == "off")
         return onOff(command == "on");
 
-    const bool headphones = targetHeadphones(args);
+    const OutputKind kind = targetKind(args);
     QString loadError;
     Settings s = Settings::load(paths::settingsFile(), &loadError);
     if (!loadError.isEmpty())
         return fail(loadError);
-    Profile &p = s.profile(headphones);
+    Profile &p = s.profile(kind);
 
     if (command == "mode") {
-        if (args.size() != 1 || !Settings::applyMode(p, args.first(), headphones))
+        if (args.size() != 1 || !Settings::applyMode(p, args.first(), kind))
             return fail("mode must be one of dynamic, movie, music, game, voice, custom");
         return save(s);
     }
@@ -439,7 +445,7 @@ int run(int argc, char *argv[]) {
         return save(s);
     }
     if (command == "reset") {
-        p = Settings::defaultProfile(headphones);
+        p = Settings::defaultProfile(kind);
         return save(s);
     }
     return fail("unknown command " + command);

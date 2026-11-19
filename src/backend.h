@@ -18,7 +18,8 @@ class Backend : public QObject {
     Q_PROPERTY(bool engineOn READ engineOn NOTIFY engineChanged)
     Q_PROPERTY(bool engineBusy READ engineBusy NOTIFY engineChanged)
     Q_PROPERTY(bool filterRunning READ filterRunning NOTIFY engineChanged)
-    Q_PROPERTY(bool headphonesActive READ headphonesActive NOTIFY engineChanged)
+    // "speakers", "headphones" or "external": what's playing, and what's edited.
+    Q_PROPERTY(QString outputKind READ outputKind NOTIFY engineChanged)
     Q_PROPERTY(QString outputSink READ outputSink NOTIFY engineChanged)
     Q_PROPERTY(QString outputDescription READ outputDescription NOTIFY engineChanged)
     Q_PROPERTY(bool playingElsewhere READ playingElsewhere NOTIFY engineChanged)
@@ -26,7 +27,7 @@ class Backend : public QObject {
     Q_PROPERTY(QString error READ error NOTIFY engineChanged)
     Q_PROPERTY(QString speakerProfileName READ speakerProfileName NOTIFY profileChanged)
     Q_PROPERTY(bool speakerProfileMeasured READ speakerProfileMeasured NOTIFY profileChanged)
-    Q_PROPERTY(bool editingHeadphones READ editingHeadphones WRITE setEditingHeadphones NOTIFY profileChanged)
+    Q_PROPERTY(QString editing READ editing WRITE setEditing NOTIFY profileChanged)
     Q_PROPERTY(QString mode READ mode NOTIFY profileChanged)
     Q_PROPERTY(double leveler READ leveler NOTIFY profileChanged)
     Q_PROPERTY(double dialogue READ dialogue NOTIFY profileChanged)
@@ -53,7 +54,7 @@ public:
     bool engineOn() const { return m_engineOn; }
     bool engineBusy() const { return m_busy; }
     bool filterRunning() const { return m_status.running; }
-    bool headphonesActive() const { return output().headphones; }
+    QString outputKind() const { return outputKindId(output().kind); }
     QString outputSink() const { return output().sink; }
     QString outputDescription() const { return output().description; }
     bool playingElsewhere() const { return output().elsewhere(); }
@@ -62,8 +63,12 @@ public:
     QString speakerProfileName() const;
     bool speakerProfileMeasured() const;
 
-    bool editingHeadphones() const { return m_editHeadphones; }
-    void setEditingHeadphones(bool headphones);
+    QString editing() const { return outputKindId(m_editKind); }
+    void setEditing(const QString &kind);
+    OutputKind editingKind() const { return m_editKind; }
+    void setEditingKind(OutputKind kind);
+    // Speakers, headphones, external, and round again.
+    Q_INVOKABLE void editNextOutput();
 
     QString mode() const { return profile().mode; }
     double leveler() const { return profile().amounts.leveler; }
@@ -113,8 +118,8 @@ signals:
     void historyChanged();
 
 private:
-    Profile &profile() { return m_settings.profile(m_editHeadphones); }
-    const Profile &profile() const { return m_settings.profile(m_editHeadphones); }
+    Profile &profile() { return m_settings.profile(m_editKind); }
+    const Profile &profile() const { return m_settings.profile(m_editKind); }
     // The engine's view of the output while it runs, our own otherwise.
     const OutputState &output() const { return m_status.running ? m_status.output : m_ownOutput; }
     void remember(const QString &key);
@@ -124,14 +129,14 @@ private:
     void loadFromDisk();
     void watch();
     void readStatus();
-    void followOutput(bool headphones);
+    void followOutput(OutputKind kind);
     void runSystemctl(const QStringList &args);
 
     QString m_path;
     bool m_manageService;
     QString m_product;
     Settings m_settings;
-    bool m_editHeadphones = false;
+    OutputKind m_editKind = OutputKind::Speakers;
     bool m_editPinned = false;
     QVector<QJsonObject> m_undo, m_redo;
     QString m_lastKey;

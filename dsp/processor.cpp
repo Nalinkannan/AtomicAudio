@@ -406,7 +406,7 @@ void Processor::processChunk(const float *inL, const float *inR, float *outL, fl
 
     const double widen = 1.0 + 1.0 * s * spk + 0.4 * s * hp;
     const double amb = s * (0.28 * spk + 0.18 * hp);
-    const double xt = 0.38 * s * spk;
+    const double xt = 0.38 * s * spk * (1.0 - m_smooth[External]);
     const double xtNorm = 1.0 / (1.0 - 0.5 * xt);
     const double cf = 0.45 * s * hp;
     const double sideKeep = 1.0 - 0.2 * d;
@@ -470,8 +470,8 @@ void Processor::processChunk(const float *inL, const float *inR, float *outL, fl
         l = mid + side + amb * aL;
         r = mid - side - amb * aR;
 
-        // Speakers: cancel part of each speaker's sound reaching the far ear,
-        // which pushes the image past the edges of the laptop.
+        // Laptop speakers: cancel part of each speaker's sound reaching the
+        // far ear, which pushes the image past the edges of the laptop.
         m_xtRing[0][m_ringPos] = l;
         m_xtRing[1][m_ringPos] = r;
         const int xi = (m_ringPos - m_xtDelay) & mask;

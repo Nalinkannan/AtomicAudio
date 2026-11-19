@@ -185,6 +185,34 @@ private slots:
         QVERIFY(std::fabs(sineGainDb(p, 630, 0.05)) < 0.1);
     }
 
+    void externalSpeakersSkipCrosstalkCancellation() {
+        // Sound from one side only: crosstalk cancellation puts an inverted,
+        // delayed copy into the other channel.
+        auto leak = [](bool external) {
+            Processor p(kFs);
+            flatten(p);
+            p.setParam(Surround, 1);
+            p.setParam(External, external ? 1 : 0);
+            const int block = 512;
+            std::vector<float> l(block), r(block, 0.0f), ol(block), orr(block);
+            double phase = 0, energy = 0;
+            for (int b = 0; b < 80; ++b) {
+                for (int i = 0; i < block; ++i) {
+                    l[i] = float(0.05 * std::sin(phase));
+                    phase += 2 * M_PI * 1000 / kFs;
+                }
+                // Mid/side widening leaks some of any one-sided sound too;
+                // compare the two runs rather than expect silence.
+                p.process(l.data(), r.data(), ol.data(), orr.data(), block);
+                if (b > 40)
+                    for (float v : orr)
+                        energy += double(v) * v;
+            }
+            return energy;
+        };
+        QVERIFY(std::fabs(10 * std::log10(leak(true) / leak(false))) > 0.5);
+    }
+
     void virtualBassRebuildsWhatTheSpeakersCantPlay() {
         Processor tuned(kFs);
         flatten(tuned);
@@ -348,7 +376,7 @@ private slots:
         Settings s;
         s.bypass = true;
         s.ceiling = -2;
-        Settings::applyMode(s.speakers, "music", false);
+        Settings::applyMode(s.speakers, "music", OutputKind::Speakers);
         s.speakers.eq[3] = 4.5;
         s.headphones.tuning = false;
         const Settings back = Settings::fromJson(s.toJson());
@@ -384,11 +412,11 @@ private slots:
 
     void modesAndPresetsApply() {
         Profile p;
-        QVERIFY(Settings::applyMode(p, "voice", false));
+        QVERIFY(Settings::applyMode(p, "voice", OutputKind::Speakers));
         QCOMPARE(p.amounts.dialogue, 0.9);
-        QVERIFY(Settings::applyMode(p, "movie", true));
+        QVERIFY(Settings::applyMode(p, "movie", OutputKind::Headphones));
         QVERIFY(p.amounts.loudness <= 0.3); // Headphones need less.
-        QVERIFY(!Settings::applyMode(p, "nope", false));
+        QVERIFY(!Settings::applyMode(p, "nope", OutputKind::Speakers));
         QVERIFY(Settings::applyEqPreset(p, "rich"));
         QCOMPARE(p.eq[1], 3.0);
         QVERIFY(Settings::applyEqPreset(p, "rock"));
@@ -428,10 +456,10 @@ private slots:
         QVERIFY(Settings::setEqBand(p, 2, 4.2));
         QCOMPARE(p.eq[2], 4.0); // Half-decibel steps.
         QCOMPARE(p.eqPreset, QString("custom"));
-        Settings::applyMode(p, "voice", false);
+        Settings::applyMode(p, "voice", OutputKind::Speakers);
         Settings::applyEqPreset(p, "rich");
         QCOMPARE(p.amounts.bass, 0.1);
-        Settings::applyMode(p, "custom", false);
+        Settings::applyMode(p, "custom", OutputKind::Speakers);
         Settings::applyEqPreset(p, "custom");
         QCOMPARE(p.amounts.bass, 0.95);
         QCOMPARE(p.eq[2], 4.0);
@@ -443,9 +471,9 @@ private slots:
         const auto doc = QJsonDocument::fromJson(R"({"speakers": {"mode": "custom", "bass": 0.8,
             "eqPreset": "custom", "eq": [1, 2, 3, 0, 0, 0, 0, 0, 0, 0]}})");
         Profile p = Settings::fromJson(doc.object()).speakers;
-        Settings::applyMode(p, "music", false);
+        Settings::applyMode(p, "music", OutputKind::Speakers);
         Settings::applyEqPreset(p, "flat");
-        Settings::applyMode(p, "custom", false);
+        Settings::applyMode(p, "custom", OutputKind::Speakers);
         Settings::applyEqPreset(p, "custom");
         QCOMPARE(p.amounts.bass, 0.8);
         QCOMPARE(p.eq[2], 3.0);
@@ -466,34 +494,34 @@ private slots:
         Settings s;
         s.speakers.amounts.bass = 0.2;
         s.headphones.amounts.bass = 0.8;
-        QCOMPARE(s.controls(false)[Bass], 0.2f);
-        QCOMPARE(s.controls(true)[Bass], 0.8f);
-        QCOMPARE(s.controls(true)[Headphones], 1.0f);
-        const Controls c = s.controls(false, 1, -23.6);
+        QCOMPARE(s.controls(OutputKind::Speakers)[Bass], 0.2f);
+        QCOMPARE(s.controls(OutputKind::Headphones)[Bass], 0.8f);
+        QCOMPARE(s.controls(OutputKind::Headphones)[Headphones], 1.0f);
+        const Controls c = s.controls(OutputKind::Speakers, 1, -23.6);
         QCOMPARE(c[SpeakerCurve], 1.0f);
         QCOMPARE(c[Volume], -24.0f); // Whole decibels.
-        QCOMPARE(s.controls(false, 7, NAN)[SpeakerCurve], float(kSpeakerProfiles.size() - 1));
-        QCOMPARE(s.controls(false, 0, NAN)[Volume], 0.0f);
+        QCOMPARE(s.controls(OutputKind::Speakers, 7, NAN)[SpeakerCurve], float(kSpeakerProfiles.size() - 1));
+        QCOMPARE(s.controls(OutputKind::Speakers, 0, NAN)[Volume], 0.0f);
     }
 
     void engineConfigTargetsTheSpeakers() {
         Settings s;
         s.speakers.tuning = false;
-        const QString conf = engineConfig(s.controls(false), "/usr/lib/ladspa/atomicaudio.so", "alsa_output.x");
+        const QString conf = engineConfig(s.controls(OutputKind::Speakers), "/usr/lib/ladspa/atomicaudio.so", "alsa_output.x");
         QVERIFY(conf.contains("filter.smart.target = { node.name = \"alsa_output.x\" }"));
         QVERIFY(conf.contains("plugin = \"/usr/lib/ladspa/atomicaudio.so\""));
         // Toggles must be numbers in the file, or filter-chain ignores them.
         QVERIFY(conf.contains("\"Tuning\" = 0"));
         QVERIFY(!conf.contains("= false"));
-        QVERIFY(!engineConfig(s.controls(false), "/p.so", {}).contains("filter.smart.target"));
+        QVERIFY(!engineConfig(s.controls(OutputKind::Speakers), "/p.so", {}).contains("filter.smart.target"));
     }
 
     void setParamSendsOnlyChanges() {
         Settings s;
-        const Controls before = s.controls(false);
+        const Controls before = s.controls(OutputKind::Speakers);
         s.speakers.amounts.bass = 0.75;
         s.bypass = true;
-        const QString cmd = setParamCommand(s.controls(false), &before);
+        const QString cmd = setParamCommand(s.controls(OutputKind::Speakers), &before);
         QVERIFY(cmd.startsWith("set-param atomicaudio Props"));
         QVERIFY(cmd.contains("\"dsp:Bass\" 0.75"));
         QVERIFY(cmd.contains("\"dsp:Bypass\" true"));
@@ -506,25 +534,85 @@ private slots:
 
     void readsVolumeAndWhereSoundGoes() {
         const QByteArray sinks = R"([
-          {"name":"bt","description":"KEF LSX II","active_port":"","ports":[]},
+          {"name":"easyeffects_sink","description":"Easy Effects Sink","ports":[],
+           "properties":{"node.virtual":"true","factory.name":"support.null-audio-sink"}},
+          {"name":"atomicaudio","description":"Atomic Audio","ports":[],
+           "properties":{"node.link-group":"filter-chain-1","node.virtual":"true"}},
           {"name":"laptop","description":"Laptop","active_port":"analog-output-speaker","mute":false,
            "volume":{"front-left":{"value":39321},"front-right":{"value":39321}},
+           "properties":{"device.api":"alsa","device.bus":"pci"},
            "ports":[{"name":"analog-output-speaker","type":"Speaker"}]}])";
         const OutputState onSpeakers = parseSinks(sinks, "laptop");
         QVERIFY(std::fabs(onSpeakers.volumeDb - (-13.31)) < 0.05); // 60% in pactl
         QVERIFY(!onSpeakers.elsewhere());
-        const OutputState onBluetooth = parseSinks(sinks, "bt");
-        QVERIFY(onBluetooth.elsewhere());
-        QCOMPARE(onBluetooth.defaultDescription, QString("KEF LSX II"));
+        // Another app's virtual sink, or our own: keep the laptop's speakers.
+        for (const char *virtualSink : {"easyeffects_sink", "atomicaudio"}) {
+            const OutputState onVirtual = parseSinks(sinks, virtualSink);
+            QCOMPARE(onVirtual.sink, QString("laptop"));
+            QVERIFY(onVirtual.elsewhere());
+        }
+        QCOMPARE(parseSinks(sinks, "easyeffects_sink").defaultDescription, QString("Easy Effects Sink"));
         QCOMPARE(parseDefaultSink(R"({"default_sink_name":"bt"})"), QString("bt"));
+    }
+
+    void followsBluetoothUsbAndHdmi() {
+        auto sink = [](const QString &name, const QString &props, const QString &ports = "[]",
+                       const QString &active = "") {
+            return QStringLiteral(R"({"name":"%1","description":"%1","active_port":"%4","ports":%3,
+                "volume":{"mono":{"value":32768}},"properties":%2})")
+                .arg(name, props, ports, active);
+        };
+        const QString all = "[" + QStringList{
+            sink("laptop", R"({"device.api":"alsa","device.bus":"pci"})",
+                 R"([{"name":"analog-output-speaker","type":"Speaker"}])", "analog-output-speaker"),
+            sink("bluez_output.buds.1", R"({"device.api":"bluez5","device.form_factor":"headset"})"),
+            sink("bluez_output.box.1", R"({"device.api":"bluez5","device.form_factor":"speaker"})"),
+            sink("bluez_output.plain.1", R"({"device.api":"bluez5"})"),
+            sink("alsa_output.usb-headset", R"({"device.api":"alsa","device.bus":"usb","device.form_factor":"headset"})"),
+            sink("alsa_output.usb-dac", R"({"device.api":"alsa","device.bus":"usb"})",
+                 R"([{"name":"analog-output-speaker","type":"Speaker"}])", "analog-output-speaker"),
+            sink("alsa_output.hdmi", R"({"device.api":"alsa","device.bus":"pci"})",
+                 R"([{"name":"hdmi-output-0","type":"HDMI"}])", "hdmi-output-0"),
+        }.join(',') + "]";
+        const QList<QPair<QString, OutputKind>> cases = {
+            {"laptop", OutputKind::Speakers},
+            {"bluez_output.buds.1", OutputKind::Headphones},
+            {"bluez_output.box.1", OutputKind::External},
+            {"bluez_output.plain.1", OutputKind::Headphones}, // Most Bluetooth audio is worn.
+            {"alsa_output.usb-headset", OutputKind::Headphones},
+            {"alsa_output.usb-dac", OutputKind::External},     // A speaker port, but not the laptop's.
+            {"alsa_output.hdmi", OutputKind::External},
+        };
+        for (const auto &[name, kind] : cases) {
+            const OutputState state = parseSinks(all.toUtf8(), name);
+            QCOMPARE(state.sink, name);
+            QVERIFY2(state.kind == kind, qPrintable(name));
+            QVERIFY(!state.elsewhere());
+            QVERIFY(std::fabs(state.volumeDb - (-18.06)) < 0.05); // 50% in pactl
+        }
+        // No default yet: the laptop's own speakers, never a USB device's.
+        QCOMPARE(parseSinks(all.toUtf8()).sink, QString("laptop"));
+    }
+
+    void onlyTheLaptopGetsTheOptimizer() {
+        Settings s;
+        s.speakers.tuning = s.headphones.tuning = s.external.tuning = true;
+        QCOMPARE(s.controls(OutputKind::Speakers)[Tuning], 1.0f);
+        QCOMPARE(s.controls(OutputKind::Headphones)[Tuning], 0.0f);
+        const Controls ext = s.controls(OutputKind::External);
+        QCOMPARE(ext[Tuning], 0.0f);
+        QCOMPARE(ext[External], 1.0f);
+        QCOMPARE(ext[Headphones], 0.0f);
+        QCOMPARE(s.controls(OutputKind::Speakers)[External], 0.0f);
+        QVERIFY(Settings::defaultProfile(OutputKind::External).amounts.loudness <= 0.4);
     }
 
     void findsTheSpeakersAndTheJack() {
         OutputState speakers = parseSinks(sinksJson("analog-output-speaker"));
         QVERIFY(speakers.found);
         QCOMPARE(speakers.sink, QString("alsa_output.pci.analog-stereo"));
-        QVERIFY(!speakers.headphones);
-        QVERIFY(parseSinks(sinksJson("analog-output-headphones")).headphones);
+        QVERIFY(speakers.kind == OutputKind::Speakers);
+        QVERIFY(parseSinks(sinksJson("analog-output-headphones")).headphones());
         QVERIFY(!parseSinks(R"([{"name":"bt","ports":[]}])").found);
         QVERIFY(!parseSinks("not json").found);
     }
@@ -543,7 +631,7 @@ private slots:
         EngineStatus s;
         s.running = true;
         s.output.found = true;
-        s.output.headphones = true;
+        s.output.kind = OutputKind::External;
         s.output.sink = "x";
         s.output.volumeDb = -12;
         s.output.defaultSink = "bt";
@@ -652,15 +740,22 @@ private slots:
         Backend backend(dir.filePath("settings.json"), nullptr, false);
         OutputState out;
         out.found = true;
-        out.headphones = true;
+        out.kind = OutputKind::Headphones;
         backend.setOutputForTest(out);
-        QVERIFY(backend.editingHeadphones());
-        backend.setEditingHeadphones(false); // Edit the speakers while on headphones.
-        out.headphones = false;
-        backend.setOutputForTest(out); // Unplugged: now they agree...
-        out.headphones = true;
-        backend.setOutputForTest(out); // ...so the next plug-in is followed again.
-        QVERIFY(backend.editingHeadphones());
+        QCOMPARE(backend.editing(), QString("headphones"));
+        backend.setEditing("speakers"); // Edit the speakers while on headphones.
+        out.kind = OutputKind::External;
+        backend.setOutputForTest(out); // A Bluetooth speaker: still pinned...
+        QCOMPARE(backend.editing(), QString("speakers"));
+        out.kind = OutputKind::Speakers;
+        backend.setOutputForTest(out); // ...until they agree...
+        out.kind = OutputKind::External;
+        backend.setOutputForTest(out); // ...so the next switch is followed again.
+        QCOMPARE(backend.editing(), QString("external"));
+        backend.editNextOutput();
+        QCOMPARE(backend.editing(), QString("speakers"));
+        backend.setEditing("nonsense");
+        QCOMPARE(backend.editing(), QString("speakers"));
     }
 
     void eqBandsSnapClampAndGoCustom() {
@@ -691,12 +786,15 @@ private slots:
         QTemporaryDir dir;
         Backend backend(dir.filePath("settings.json"), nullptr, false);
         backend.setAmount("bass", 0.1);
-        backend.setEditingHeadphones(true);
+        backend.setEditing("headphones");
         QVERIFY(backend.bass() != 0.1);
         backend.setAmount("bass", 0.7);
-        backend.setEditingHeadphones(false);
+        backend.setEditing("external");
+        backend.setAmount("bass", 0.4);
+        backend.setEditing("speakers");
         QCOMPARE(backend.bass(), 0.1);
         QCOMPARE(backend.settings().headphones.amounts.bass, 0.7);
+        QCOMPARE(backend.settings().external.amounts.bass, 0.4);
     }
 
     void eqCurvePeaksWhereTheBandIs() {

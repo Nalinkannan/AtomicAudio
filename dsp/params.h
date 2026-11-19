@@ -21,6 +21,10 @@ enum Param : int {
     // The output's volume in dB (0 = full); quieter listening gets more bass
     // and treble back, the way hearing needs it.
     Volume,
+    // Speakers that aren't the laptop's own (Bluetooth, HDMI, USB): the
+    // crosstalk cancellation is timed for speakers a laptop's width apart, so
+    // it stays off.
+    External,
     ParamCount
 };
 
@@ -56,6 +60,7 @@ inline constexpr ParamInfo kParams[ParamCount] = {
     {"EQ10", -12, 12, 0, false},
     {"Profile", 0, 1, 0, false},
     {"Volume", -90, 0, 0, false},
+    {"External", 0, 1, 0, true},
 };
 
 inline constexpr double kEqFreqs[EqBands] = {31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};

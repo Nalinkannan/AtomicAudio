@@ -75,7 +75,7 @@ Backend::Backend(const QString &settingsPath, QObject *parent, bool manageServic
         if (m_status.running)
             return;
         m_ownOutput = state;
-        followOutput(state.headphones);
+        followOutput(state.kind);
         emit engineChanged();
     });
 
@@ -85,7 +85,7 @@ Backend::Backend(const QString &settingsPath, QObject *parent, bool manageServic
         m_poll.start();
         refresh();
     }
-    m_editHeadphones = output().headphones;
+    m_editKind = output().kind;
 }
 
 Backend::~Backend() {
@@ -135,20 +135,21 @@ void Backend::loadFromDisk() {
 
 void Backend::setOutputForTest(const OutputState &output) {
     m_ownOutput = output;
-    followOutput(output.headphones);
+    followOutput(output.kind);
     emit engineChanged();
 }
 
-void Backend::followOutput(bool headphones) {
-    // Plugging in moves the editor to what you now hear, unless you chose to
-    // edit the other output; once both agree again, it follows once more.
+void Backend::followOutput(OutputKind kind) {
+    // Switching outputs moves the editor to what you now hear, unless you
+    // chose to edit another output; once both agree again, it follows once
+    // more.
     if (m_editPinned) {
-        if (m_editHeadphones == headphones)
+        if (m_editKind == kind)
             m_editPinned = false;
         return;
     }
-    if (m_editHeadphones != headphones) {
-        m_editHeadphones = headphones;
+    if (m_editKind != kind) {
+        m_editKind = kind;
         emit profileChanged();
     }
 }
@@ -161,7 +162,7 @@ void Backend::readStatus() {
     const bool differs = next.toJson() != m_status.toJson();
     m_status = next;
     if (m_status.running)
-        followOutput(m_status.output.headphones);
+        followOutput(m_status.output.kind);
     if (differs)
         emit engineChanged();
 }
@@ -205,12 +206,24 @@ void Backend::toggleEngine() {
     runSystemctl({"enable", "--now", service::kUnit});
 }
 
-void Backend::setEditingHeadphones(bool headphones) {
-    m_editPinned = headphones != output().headphones;
-    if (headphones == m_editHeadphones)
+void Backend::setEditingKind(OutputKind kind) {
+    m_editPinned = kind != output().kind;
+    if (kind == m_editKind)
         return;
-    m_editHeadphones = headphones;
+    m_editKind = kind;
     emit profileChanged();
+}
+
+void Backend::setEditing(const QString &kind) {
+    bool ok = false;
+    const OutputKind k = outputKindFromId(kind, &ok);
+    if (ok)
+        setEditingKind(k);
+}
+
+void Backend::editNextOutput() {
+    const int count = int(std::size(kOutputKinds));
+    setEditingKind(kOutputKinds[(int(m_editKind) + 1) % count]);
 }
 
 QString Backend::speakerProfileName() const {
@@ -293,7 +306,7 @@ void Backend::setMode(const QString &id) {
     if (id == profile().mode)
         return;
     Profile next = profile();
-    if (!Settings::applyMode(next, id, m_editHeadphones))
+    if (!Settings::applyMode(next, id, m_editKind))
         return;
     remember("mode");
     profile() = next;
@@ -355,7 +368,7 @@ void Backend::toggleBypass() {
 }
 
 void Backend::resetProfile() {
-    const Profile fresh = Settings::defaultProfile(m_editHeadphones);
+    const Profile fresh = Settings::defaultProfile(m_editKind);
     if (fresh == profile())
         return;
     remember("reset");
@@ -384,7 +397,7 @@ QList<qreal> Backend::eqResponse(int points) const {
 
 QList<qreal> Backend::tuningResponse(int points) const {
     QList<qreal> out;
-    const bool on = profile().tuning && !m_editHeadphones;
+    const bool on = profile().tuning && m_editKind == OutputKind::Speakers;
     std::vector<Coeffs> k;
     if (on) {
         const auto &sp = kSpeakerProfiles[m_settings.resolveSpeakerProfile(m_product)];

@@ -29,8 +29,8 @@ Engine::Engine(QObject *parent) : QObject(parent) {
     connect(&m_query, &OutputQuery::finished, this, &Engine::onOutput);
     connect(&m_query, &OutputQuery::failed, this, [](const QString &error) { log(error); });
 
-    // At login the sound server can still be starting; keep looking for the
-    // speakers until they show up.
+    // At login the sound server can still be starting; keep looking for an
+    // output until one shows up.
     m_outputRetry.setInterval(3000);
     connect(&m_outputRetry, &QTimer::timeout, &m_query, &OutputQuery::start);
 
@@ -107,7 +107,7 @@ Engine::~Engine() { stop(); }
 Controls Engine::currentControls() const {
     // A muted output tells nothing about how loud you listen; keep the contour.
     const double volume = m_output.found && !m_output.muted ? m_output.volumeDb : 0.0;
-    const Controls fromSettings = m_settings.controls(m_output.headphones, m_profile, volume);
+    const Controls fromSettings = m_settings.controls(m_output.kind, m_profile, volume);
     if (m_output.muted && m_haveSent) {
         Controls c = fromSettings;
         c[atomic::Volume] = m_sent[atomic::Volume];
@@ -138,7 +138,7 @@ bool Engine::start(QString *error) {
     if (!queryError.isEmpty())
         log(queryError);
     if (!m_output.found) {
-        log(tr("No built-in speakers found yet; filtering the default output until they show up."));
+        log(tr("No sound output found yet; filtering the default output until one shows up."));
         m_outputRetry.start();
     }
 
@@ -237,24 +237,26 @@ void Engine::reloadSettings() {
 
 void Engine::onOutput(const OutputState &state) {
     if (!state.found) {
-        // Keep what we had; the speakers may just be between card profiles.
+        // Keep what we had; the output may just be between card profiles.
         if (!m_outputRetry.isActive())
             m_outputRetry.start();
         return;
     }
     m_outputRetry.stop();
     const bool sinkChanged = state.sink != m_runningSink;
-    const bool modeChanged = state.headphones != m_output.headphones;
+    const bool kindChanged = state.kind != m_output.kind;
     m_output = state;
     if (sinkChanged) {
-        // A new card profile renames the sink (and at login the speakers may
-        // only now have appeared); the smart filter's target is fixed in the
-        // config, so restart the filter against the right name.
-        log(tr("Filtering %1.").arg(state.sink));
+        // Another output became the default (Bluetooth connected, HDMI
+        // picked), a new card profile renamed the sink, or at login the
+        // output only now appeared. The smart filter's target is fixed in the
+        // config, so restart the filter in front of the new one.
+        log(tr("Filtering %1 (%2).").arg(state.description.isEmpty() ? state.sink : state.description,
+                                         outputKindId(state.kind)));
         restartPipewire();
     } else {
-        if (modeChanged)
-            log(state.headphones ? tr("Headphones plugged in.") : tr("Back on speakers."));
+        if (kindChanged)
+            log(state.headphones() ? tr("Headphones plugged in.") : tr("Back on speakers."));
         applyControls();
     }
     writeStatus();

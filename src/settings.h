@@ -8,6 +8,17 @@
 #include <QString>
 #include <array>
 
+// What kind of output sound plays on. Each keeps its own settings.
+//   Speakers:   the laptop's own, the only ones the speaker optimizer fits
+//   Headphones: the jack, Bluetooth headphones and headsets, USB headsets
+//   External:   other speakers (Bluetooth, HDMI or DisplayPort, USB, line out)
+enum class OutputKind { Speakers, Headphones, External };
+inline constexpr OutputKind kOutputKinds[] = {OutputKind::Speakers, OutputKind::Headphones, OutputKind::External};
+// "speakers", "headphones" or "external": the settings keys and CLI names.
+QString outputKindId(OutputKind kind);
+// The kind for an id, or false in `ok` (when given) for an unknown one.
+OutputKind outputKindFromId(const QString &id, bool *ok = nullptr);
+
 // The five effect amounts a mode sets.
 struct Amounts {
     double leveler = 0.4;
@@ -22,8 +33,9 @@ struct Amounts {
     static const QStringList &keys();
 };
 
-// One sound setup. Speakers and headphones each keep their own, and the
-// engine switches between them when you plug in. Custom mode
+// One sound setup. The laptop's speakers, headphones and external speakers
+// each keep their own, and the engine switches between them as the output
+// changes. Custom mode
 // and the custom EQ keep their own values, so trying a preset and coming
 // back never loses your mix.
 struct Profile {
@@ -63,11 +75,12 @@ public:
     // "auto" picks the optimizer curve from the laptop model; otherwise an id
     // from kSpeakerProfiles.
     QString speakerProfile = "auto";
-    Profile speakers = defaultProfile(false);
-    Profile headphones = defaultProfile(true);
+    Profile speakers = defaultProfile(OutputKind::Speakers);
+    Profile headphones = defaultProfile(OutputKind::Headphones);
+    Profile external = defaultProfile(OutputKind::External);
 
-    Profile &profile(bool forHeadphones) { return forHeadphones ? headphones : speakers; }
-    const Profile &profile(bool forHeadphones) const { return forHeadphones ? headphones : speakers; }
+    Profile &profile(OutputKind kind);
+    const Profile &profile(OutputKind kind) const;
 
     static const QList<Mode> &modes();
     static const QList<EqPreset> &eqPresets();
@@ -76,10 +89,10 @@ public:
     // Preset ids in display order: one group's, or every preset then "custom".
     static QStringList eqPresetIds(EqGroup group);
     static QStringList allEqPresetIds();
-    static Profile defaultProfile(bool forHeadphones);
+    static Profile defaultProfile(OutputKind kind);
 
     // Sets the effect amounts of a mode; "custom" brings back your own.
-    static bool applyMode(Profile &profile, const QString &id, bool forHeadphones);
+    static bool applyMode(Profile &profile, const QString &id, OutputKind kind);
     // Sets an EQ preset; "custom" brings back your own curve.
     static bool applyEqPreset(Profile &profile, const QString &id);
     // Changes one amount by hand, which makes the mix custom.
@@ -97,7 +110,7 @@ public:
 
     // What the plugin's controls should be for this output, optimizer curve
     // and output volume (dB, 0 = full).
-    Controls controls(bool forHeadphones, int speakerProfile = atomic::kGenericProfile, double volumeDb = 0) const;
+    Controls controls(OutputKind kind, int speakerProfile = atomic::kGenericProfile, double volumeDb = 0) const;
 };
 
 // The PipeWire config the engine runs: a filter-chain smart filter that

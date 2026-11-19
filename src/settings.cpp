@@ -80,6 +80,26 @@ Profile profileFromJson(const QJsonValue &value, const Profile &fallback) {
 
 } // namespace
 
+QString outputKindId(OutputKind kind) {
+    switch (kind) {
+    case OutputKind::Headphones: return QStringLiteral("headphones");
+    case OutputKind::External: return QStringLiteral("external");
+    case OutputKind::Speakers: break;
+    }
+    return QStringLiteral("speakers");
+}
+
+OutputKind outputKindFromId(const QString &id, bool *ok) {
+    if (ok)
+        *ok = true;
+    for (OutputKind kind : kOutputKinds)
+        if (outputKindId(kind) == id)
+            return kind;
+    if (ok)
+        *ok = false;
+    return OutputKind::Speakers;
+}
+
 bool Amounts::operator==(const Amounts &o) const {
     return leveler == o.leveler && dialogue == o.dialogue && surround == o.surround && bass == o.bass &&
            loudness == o.loudness;
@@ -189,13 +209,21 @@ const EqPreset *Settings::findEqPreset(const QString &id) {
     return nullptr;
 }
 
-Profile Settings::defaultProfile(bool forHeadphones) {
+Profile &Settings::profile(OutputKind kind) {
+    return kind == OutputKind::Headphones ? headphones : kind == OutputKind::External ? external : speakers;
+}
+
+const Profile &Settings::profile(OutputKind kind) const {
+    return kind == OutputKind::Headphones ? headphones : kind == OutputKind::External ? external : speakers;
+}
+
+Profile Settings::defaultProfile(OutputKind kind) {
     Profile p;
-    applyMode(p, "dynamic", forHeadphones);
+    applyMode(p, "dynamic", kind);
     return p;
 }
 
-bool Settings::applyMode(Profile &profile, const QString &id, bool forHeadphones) {
+bool Settings::applyMode(Profile &profile, const QString &id, OutputKind kind) {
     if (id == "custom") {
         profile.mode = id;
         profile.amounts = profile.customAmounts;
@@ -206,9 +234,12 @@ bool Settings::applyMode(Profile &profile, const QString &id, bool forHeadphones
         return false;
     profile.mode = id;
     profile.amounts = m->amounts;
-    // Headphones need far less help to be loud.
-    if (forHeadphones)
+    // Headphones need far less help to be loud, and speakers bigger than a
+    // laptop's need less too.
+    if (kind == OutputKind::Headphones)
         profile.amounts.loudness = std::min(profile.amounts.loudness, 0.3);
+    else if (kind == OutputKind::External)
+        profile.amounts.loudness = std::min(profile.amounts.loudness, 0.4);
     return true;
 }
 
@@ -263,6 +294,7 @@ QJsonObject Settings::toJson() const {
         {"speakerProfile", speakerProfile},
         {"speakers", profileToJson(speakers)},
         {"headphones", profileToJson(headphones)},
+        {"external", profileToJson(external)},
     };
 }
 
@@ -273,8 +305,9 @@ Settings Settings::fromJson(const QJsonObject &o) {
     s.ceiling = std::isfinite(ceiling) ? std::clamp(ceiling, -6.0, 0.0) : -1.0;
     const QString speakerProfile = o.value("speakerProfile").toString("auto");
     s.speakerProfile = profileIndex(speakerProfile.toUtf8().constData()) >= 0 ? speakerProfile : QString("auto");
-    s.speakers = profileFromJson(o.value("speakers"), defaultProfile(false));
-    s.headphones = profileFromJson(o.value("headphones"), defaultProfile(true));
+    s.speakers = profileFromJson(o.value("speakers"), defaultProfile(OutputKind::Speakers));
+    s.headphones = profileFromJson(o.value("headphones"), defaultProfile(OutputKind::Headphones));
+    s.external = profileFromJson(o.value("external"), defaultProfile(OutputKind::External));
     return s;
 }
 
@@ -316,17 +349,19 @@ bool Settings::save(const QString &path, QString *error) const {
     return true;
 }
 
-Controls Settings::controls(bool forHeadphones, int speakerProfile, double volumeDb) const {
-    const Profile &p = profile(forHeadphones);
+Controls Settings::controls(OutputKind kind, int speakerProfile, double volumeDb) const {
+    const Profile &p = profile(kind);
     Controls c{};
     c[Bypass] = bypass ? 1.0f : 0.0f;
-    c[Headphones] = forHeadphones ? 1.0f : 0.0f;
+    c[Headphones] = kind == OutputKind::Headphones ? 1.0f : 0.0f;
+    c[External] = kind == OutputKind::External ? 1.0f : 0.0f;
     c[Leveler] = float(p.amounts.leveler);
     c[Dialogue] = float(p.amounts.dialogue);
     c[Surround] = float(p.amounts.surround);
     c[Bass] = float(p.amounts.bass);
     c[Loudness] = float(p.amounts.loudness);
-    c[Tuning] = p.tuning ? 1.0f : 0.0f;
+    // The optimizer's curves are measured for the laptop's own speakers.
+    c[Tuning] = p.tuning && kind == OutputKind::Speakers ? 1.0f : 0.0f;
     c[Ceiling] = float(ceiling);
     for (int i = 0; i < EqBands; ++i)
         c[Eq1 + i] = float(p.eq[i]);

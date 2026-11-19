@@ -27,7 +27,11 @@ ApplicationWindow {
     property bool helpVisible: false
     property int selectedEffect: 0
     readonly property var effectKeys: ["surround", "dialogue", "bass", "leveler", "loudness", "tuning"]
-    readonly property bool editingHeadphones: backend.editingHeadphones
+    readonly property bool editingHeadphones: backend.editing === "headphones"
+    readonly property bool editingExternal: backend.editing === "external"
+    readonly property var outputNames: ({
+        "speakers": qsTr("speakers"), "headphones": qsTr("headphones"), "external": qsTr("external speakers")
+    })
 
     function tint(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
     function adjustSelected(direction) {
@@ -69,7 +73,7 @@ ApplicationWindow {
     Shortcut { sequence: "A"; context: Qt.ApplicationShortcut; onActivated: backend.toggleBypass() }
     Shortcut { sequence: "E"; context: Qt.ApplicationShortcut; onActivated: backend.cycleEqPreset() }
     Shortcut { sequence: "O"; context: Qt.ApplicationShortcut; onActivated: backend.setTuning(!backend.tuning) }
-    Shortcut { sequence: "H"; context: Qt.ApplicationShortcut; onActivated: backend.editingHeadphones = !backend.editingHeadphones }
+    Shortcut { sequence: "H"; context: Qt.ApplicationShortcut; onActivated: backend.editNextOutput() }
     Shortcut { sequence: "R"; context: Qt.ApplicationShortcut; onActivated: backend.resetProfile() }
     Shortcut { sequences: ["Up", "K"]; context: Qt.ApplicationShortcut; onActivated: win.selectedEffect = (win.selectedEffect + win.effectKeys.length - 1) % win.effectKeys.length }
     Shortcut { sequences: ["Down", "J"]; context: Qt.ApplicationShortcut; onActivated: win.selectedEffect = (win.selectedEffect + 1) % win.effectKeys.length }
@@ -124,11 +128,11 @@ ApplicationWindow {
                     }
                     Label {
                         text: backend.outputSink === ""
-                              ? qsTr("Looking for your speakers…")
+                              ? qsTr("Looking for a sound output…")
                               : backend.playingElsewhere
                               ? qsTr("%1 · not the output in use").arg(backend.outputDescription || backend.outputSink)
                               : qsTr("%1 · playing on %2").arg(backend.outputDescription || backend.outputSink)
-                                    .arg(backend.headphonesActive ? qsTr("headphones") : qsTr("speakers"))
+                                    .arg(win.outputNames[backend.outputKind] || backend.outputKind)
                         font.pixelSize: 12
                         color: win.tint(win.fg, 0.55)
                         elide: Text.ElideRight
@@ -151,18 +155,22 @@ ApplicationWindow {
                         spacing: 4
                         Repeater {
                             model: [
-                                { headphones: false, icon: "speakers", label: qsTr("Speakers") },
-                                { headphones: true, icon: "headphones", label: qsTr("Headphones") }
+                                { kind: "speakers", icon: "speakers", label: qsTr("Speakers"), tip: qsTr("The laptop's own speakers") },
+                                { kind: "headphones", icon: "headphones", label: qsTr("Headphones"), tip: qsTr("The headphone jack, Bluetooth and USB headphones") },
+                                { kind: "external", icon: "external", label: qsTr("External"), tip: qsTr("Other speakers: Bluetooth, HDMI, USB") }
                             ]
                             delegate: AbstractButton {
                                 id: seg
-                                readonly property bool current: modelData.headphones === backend.editingHeadphones
-                                readonly property bool live: modelData.headphones === backend.headphonesActive
+                                readonly property bool current: modelData.kind === backend.editing
+                                readonly property bool live: modelData.kind === backend.outputKind && backend.outputSink !== ""
                                 width: segRow.implicitWidth + 28
                                 height: 32
                                 hoverEnabled: true
                                 focusPolicy: Qt.NoFocus
-                                onClicked: backend.editingHeadphones = modelData.headphones
+                                onClicked: backend.editing = modelData.kind
+                                ToolTip.visible: hovered
+                                ToolTip.delay: 500
+                                ToolTip.text: modelData.tip
                                 background: Rectangle {
                                     radius: Math.min(16, theme.radius)
                                     color: seg.current ? win.tint(win.accent, 0.18) : seg.hovered ? win.tint(win.fg, 0.06) : "transparent"
@@ -268,8 +276,8 @@ ApplicationWindow {
                 }
             }
 
-            // Sound going to Bluetooth, HDMI or USB isn't processed; say so
-            // rather than leave a dead switch.
+            // Sound going to another app's virtual output isn't processed;
+            // say so rather than leave a dead switch.
             Rectangle {
                 visible: backend.playingElsewhere && backend.error === ""
                 Layout.fillWidth: true
@@ -281,7 +289,7 @@ ApplicationWindow {
                     id: elsewhereLabel
                     anchors.fill: parent
                     anchors.margins: 10
-                    text: qsTr("Sound is going to %1. Atomic Audio enhances the built-in speakers and headphone jack, so switch the output to them to hear it.")
+                    text: qsTr("Sound is going to %1, a virtual output Atomic Audio can't sit in front of. Pick your speakers, headphones or another sound device as the output to hear it.")
                               .arg(backend.elsewhereDescription)
                     wrapMode: Text.Wrap
                     color: win.fg
@@ -467,7 +475,7 @@ ApplicationWindow {
                                 gains: backend.eq
                                 freqs: backend.eqFrequencies
                                 curve: { backend.eq; return backend.eqResponse(180) }
-                                tuningCurve: { backend.tuning; backend.editingHeadphones; return backend.tuning && !backend.editingHeadphones ? backend.tuningResponse(180) : [] }
+                                tuningCurve: { backend.tuning; backend.editing; return backend.tuning && backend.editing === "speakers" ? backend.tuningResponse(180) : [] }
                                 opacity: backend.bypass ? 0.5 : 1
                                 onBandChanged: (band, db) => backend.setEqBand(band, db)
                             }
@@ -543,7 +551,8 @@ ApplicationWindow {
                             Layout.margins: 6
                             Layout.bottomMargin: 4
                             Label {
-                                text: win.editingHeadphones ? qsTr("Headphone effects") : qsTr("Speaker effects")
+                                text: win.editingHeadphones ? qsTr("Headphone effects")
+                                      : win.editingExternal ? qsTr("External speaker effects") : qsTr("Speaker effects")
                                 font.pixelSize: 16
                                 font.weight: Font.DemiBold
                                 color: win.fg
@@ -575,6 +584,7 @@ ApplicationWindow {
                                     icon: "surround"
                                     title: qsTr("Surround virtualizer")
                                     subtitle: win.editingHeadphones ? qsTr("Sound in front of you, not in your head")
+                                              : win.editingExternal ? qsTr("Wider than the speakers themselves")
                                                                     : qsTr("Wider than the laptop itself")
                                     value: backend.surround
                                     selected: win.selectedEffect === 0
@@ -626,11 +636,11 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     icon: "optimizer"
                                     title: qsTr("Speaker optimizer")
-                                    subtitle: win.editingHeadphones ? qsTr("Only for the built-in speakers")
+                                    subtitle: backend.editing !== "speakers" ? qsTr("Only for the built-in speakers")
                                                                     : backend.speakerProfileMeasured ? qsTr("Measured for the %1").arg(backend.speakerProfileName)
                                                                     : qsTr("General tuning for laptop speakers")
                                     toggle: true
-                                    available: !win.editingHeadphones
+                                    available: backend.editing === "speakers"
                                     checked: backend.tuning
                                     selected: win.selectedEffect === 5
                                     onToggled: (on) => backend.setTuning(on)
@@ -649,7 +659,7 @@ ApplicationWindow {
                 Repeater {
                     model: [
                         ["Space", qsTr("on/off")], ["A", qsTr("compare")], ["1–6", qsTr("modes")],
-                        ["E", qsTr("EQ preset")], ["H", qsTr("speakers/headphones")], ["?", qsTr("all shortcuts")]
+                        ["E", qsTr("EQ preset")], ["H", qsTr("output")], ["?", qsTr("all shortcuts")]
                     ]
                     delegate: Row {
                         spacing: 6

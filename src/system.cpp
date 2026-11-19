@@ -11,6 +11,7 @@
 #include <QStandardPaths>
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <utility>
 
 namespace paths {
@@ -62,49 +63,115 @@ QString productName() {
     return QString::fromUtf8(file.readAll()).trimmed();
 }
 
+namespace {
+
+struct SinkInfo {
+    QJsonObject json;
+    QString name;
+    // A sound device, not a filter or another app's virtual sink.
+    bool device = false;
+    // Has a speaker port and sits inside the laptop (not USB or Bluetooth).
+    bool builtIn = false;
+    OutputKind kind = OutputKind::Speakers;
+};
+
+bool hasAny(const QString &text, std::initializer_list<const char *> words) {
+    for (const char *w : words)
+        if (text.contains(QLatin1String(w), Qt::CaseInsensitive))
+            return true;
+    return false;
+}
+
+SinkInfo describeSink(const QJsonObject &sink) {
+    SinkInfo info;
+    info.json = sink;
+    info.name = sink.value("name").toString();
+    const QJsonObject props = sink.value("properties").toObject();
+    auto prop = [&props](const char *key) { return props.value(QLatin1String(key)).toString(); };
+
+    const QString api = prop("device.api"), bus = prop("device.bus");
+    const bool bluetooth = api == "bluez5" || bus == "bluetooth" || info.name.startsWith("bluez_output.");
+    const bool usb = bus == "usb";
+    const bool ours = info.name == "atomicaudio" || info.name.startsWith("atomicaudio.");
+    // Filters and null sinks (another app's effects, for one) are virtual:
+    // putting ours in front of one would only stack it on theirs.
+    const bool virtualSink = props.contains("node.link-group") || prop("node.virtual") == "true";
+    const QJsonArray ports = sink.value("ports").toArray();
+    // Ports are a sound card's (jack, speaker, HDMI), so they mark a device too.
+    info.device = !ours && !virtualSink && (!api.isEmpty() || bluetooth || !ports.isEmpty());
+
+    bool hasSpeaker = false;
+    QString activeType;
+    const QString active = sink.value("active_port").toString();
+    for (const auto &p : ports) {
+        const QJsonObject port = p.toObject();
+        const QString name = port.value("name").toString(), type = port.value("type").toString();
+        if (type.compare("Speaker", Qt::CaseInsensitive) == 0 || name.contains("speaker", Qt::CaseInsensitive))
+            hasSpeaker = true;
+        if (name == active)
+            activeType = type.isEmpty() ? name : type;
+    }
+    info.builtIn = info.device && hasSpeaker && !bluetooth && !usb;
+
+    // What a device says it is: the port in use, then the form factor
+    // (Bluetooth and USB report one), then its icon.
+    const QString port = activeType + ' ' + active;
+    const QString form = prop("device.form_factor") + ' ' + prop("device.icon_name");
+    if (hasAny(port, {"headphone", "headset"}))
+        info.kind = OutputKind::Headphones;
+    else if (bluetooth)
+        // Most Bluetooth audio is worn; speakers say so.
+        info.kind = hasAny(form, {"speaker", "portable", "car", "hifi", "tv", "computer"}) ? OutputKind::External
+                                                                                             : OutputKind::Headphones;
+    else if (usb)
+        info.kind = hasAny(form, {"headphone", "headset", "handset"}) ? OutputKind::Headphones : OutputKind::External;
+    else if (info.builtIn && hasAny(port, {"speaker"}))
+        info.kind = OutputKind::Speakers;
+    else
+        info.kind = OutputKind::External; // HDMI, DisplayPort, line out, S/PDIF.
+    return info;
+}
+
+} // namespace
+
 OutputState parseSinks(const QByteArray &sinksJson, const QString &defaultSink) {
     OutputState state;
     state.defaultSink = defaultSink;
     const QJsonArray sinks = QJsonDocument::fromJson(sinksJson).array();
+    std::optional<SinkInfo> chosen, builtIn;
     for (const auto &value : sinks) {
-        const QJsonObject sink = value.toObject();
-        if (sink.value("name").toString() == defaultSink)
-            state.defaultDescription = sink.value("description").toString();
-        if (state.found)
-            continue;
-        const QJsonArray ports = sink.value("ports").toArray();
-        bool hasSpeaker = false;
-        QString activeType;
-        const QString active = sink.value("active_port").toString();
-        for (const auto &p : ports) {
-            const QJsonObject port = p.toObject();
-            const QString name = port.value("name").toString(), type = port.value("type").toString();
-            if (type.compare("Speaker", Qt::CaseInsensitive) == 0 || name.contains("speaker", Qt::CaseInsensitive))
-                hasSpeaker = true;
-            if (name == active)
-                activeType = type.isEmpty() ? name : type;
+        const SinkInfo info = describeSink(value.toObject());
+        if (info.name == defaultSink) {
+            state.defaultDescription = info.json.value("description").toString();
+            if (info.device)
+                chosen = info;
         }
-        if (!hasSpeaker)
-            continue;
-        state.found = true;
-        state.sink = sink.value("name").toString();
-        state.description = sink.value("description").toString();
-        state.headphones = activeType.contains("headphone", Qt::CaseInsensitive) ||
-                           active.contains("headphone", Qt::CaseInsensitive);
-        state.muted = sink.value("mute").toBool();
-        // PulseAudio volumes are cubic: amplitude = (value / 65536)^3.
-        const QJsonObject volume = sink.value("volume").toObject();
-        double sum = 0;
-        int channels = 0;
-        for (auto it = volume.begin(); it != volume.end(); ++it) {
-            sum += it.value().toObject().value("value").toDouble();
-            ++channels;
-        }
-        const double level = channels ? sum / channels / 65536.0 : 1.0;
-        state.volumeDb = level > 0 ? std::clamp(60.0 * std::log10(level), -90.0, 12.0) : -90.0;
+        if (info.builtIn && !builtIn)
+            builtIn = info;
     }
+    if (!chosen)
+        chosen = builtIn;
     if (state.defaultDescription.isEmpty())
         state.defaultDescription = defaultSink;
+    if (!chosen)
+        return state;
+
+    const QJsonObject &sink = chosen->json;
+    state.found = true;
+    state.sink = chosen->name;
+    state.description = sink.value("description").toString();
+    state.kind = chosen->kind;
+    state.muted = sink.value("mute").toBool();
+    // PulseAudio volumes are cubic: amplitude = (value / 65536)^3.
+    const QJsonObject volume = sink.value("volume").toObject();
+    double sum = 0;
+    int channels = 0;
+    for (auto it = volume.begin(); it != volume.end(); ++it) {
+        sum += it.value().toObject().value("value").toDouble();
+        ++channels;
+    }
+    const double level = channels ? sum / channels / 65536.0 : 1.0;
+    state.volumeDb = level > 0 ? std::clamp(60.0 * std::log10(level), -90.0, 12.0) : -90.0;
     return state;
 }
 
@@ -177,7 +244,8 @@ bool EngineStatus::alive() const { return pid > 0 && QFileInfo::exists(QStringLi
 
 QJsonObject EngineStatus::toJson() const {
     return {{"running", running},
-            {"headphones", output.headphones},
+            {"kind", outputKindId(output.kind)},
+            {"headphones", output.headphones()},
             {"sink", output.sink},
             {"description", output.description},
             {"volumeDb", output.volumeDb},
@@ -192,7 +260,9 @@ EngineStatus EngineStatus::fromJson(const QJsonObject &o) {
     EngineStatus s;
     s.running = o.value("running").toBool();
     s.output.found = !o.value("sink").toString().isEmpty();
-    s.output.headphones = o.value("headphones").toBool();
+    s.output.kind = o.contains("kind") ? outputKindFromId(o.value("kind").toString())
+                    : o.value("headphones").toBool() ? OutputKind::Headphones
+                                                     : OutputKind::Speakers;
     s.output.sink = o.value("sink").toString();
     s.output.description = o.value("description").toString();
     s.output.volumeDb = o.value("volumeDb").toDouble();

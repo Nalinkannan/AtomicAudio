@@ -10,8 +10,10 @@
 
 Laptop speakers are tiny, and played as they are they sound thin and boxy.
 Atomic Audio is the processing that makes them sound full, wide and loud: a
-PipeWire filter in front of your built-in speakers, with a window, a terminal
-UI and a command line to control it.
+PipeWire filter in front of whatever you're listening on, with a window, a
+terminal UI and a command line to control it. It follows you from the
+built-in speakers to the headphone jack, Bluetooth headphones and speakers,
+USB headsets and DACs, and HDMI or DisplayPort screens.
 
 - **Modes** for what you're playing: Dynamic, Movie, Music, Game, Voice, and
   Custom, which keeps your own mix.
@@ -31,8 +33,9 @@ UI and a command line to control it.
   library of 21 more from open-source players under **More**: tone fixes
   (Bass Boost, Treble Boost, Vocal Clarity, Podcast, Loudness Curve) and
   genres from Ballad and Classical to Rock, Techno and Deep House.
-- **Separate speaker and headphone settings**, switched automatically when
-  you plug in.
+- **Separate settings for speakers, headphones and external speakers**,
+  switched automatically when you plug in, connect Bluetooth or pick another
+  output.
 - **One-key compare** with the original sound.
 
 Every app goes through it, the volume keys keep working, and turning it off
@@ -98,7 +101,7 @@ also shows what apps sent in, before processing.
 | ↑ ↓ / K J | Pick an effect |
 | ← → | Turn the effect down or up |
 | O | Speaker optimizer on or off |
-| H | Edit the speakers' or the headphones' sound |
+| H | Edit the speakers', headphones' or external speakers' sound |
 | R | Reset this output to its defaults |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
 | ? | All shortcuts |
@@ -129,8 +132,9 @@ half-decibel steps.
 
 `atomicaudio tui` has the same controls: arrows to move and adjust (`j`/`k`
 move too), `1`–`6` for modes, `e` for presets, `a` to compare, `h` to switch
-between speakers and headphones, `space` for on/off, `u`/`r` to undo and
-redo, and `q` to quit. On the EQ row, `tab` or `,` `.` pick a band.
+between speakers, headphones and external speakers, `space` for on/off,
+`u`/`r` to undo and redo, and `q` to quit. On the EQ row, `tab` or `,` `.`
+pick a band.
 
 ### The command line
 
@@ -150,8 +154,8 @@ atomicaudio bypass                   # toggle the original sound
 atomicaudio reset
 ```
 
-Add `--speakers` or `--headphones` to change that output's sound. Without
-either, the output playing now is changed. Every command exits 0 on success
+Add `--speakers`, `--headphones` or `--external` to change that output's
+sound. Without one, the output playing now is changed. Every command exits 0 on success
 and 1 with an error on stderr.
 
 A Hyprland keybinding that flips between the enhanced and the original
@@ -160,6 +164,25 @@ sound (instantly, since the filter stays loaded):
 ```
 bind = SUPER ALT, A, exec, atomicaudio bypass
 ```
+
+## Outputs
+
+Atomic Audio processes the output your system plays on, and moves with it
+when that changes. Each kind of output keeps its own mode, effects and
+equalizer:
+
+| Output | Includes | Differences |
+| --- | --- | --- |
+| Speakers | The laptop's built-in speakers | Speaker optimizer, crosstalk cancellation for a laptop's width |
+| Headphones | The headphone jack, Bluetooth headphones, earbuds and headsets, USB headsets | Crossfeed instead of crosstalk cancellation, gentler loudness |
+| External | Bluetooth speakers, HDMI and DisplayPort screens, USB DACs and speakers, line out | No optimizer or crosstalk cancellation, gentler loudness |
+
+Bluetooth and USB devices are sorted by what they report themselves to be.
+A Bluetooth device that doesn't say counts as headphones, since most are.
+
+The one thing it won't sit in front of is another virtual output, such as
+Easy Effects' sink. While one of those is the default, Atomic Audio stays on
+the built-in speakers and says so.
 
 ## Supported laptops
 
@@ -200,7 +223,7 @@ is clearly there. Half of what the measurement shows is plenty.
 ```mermaid
 flowchart LR
     apps["Apps"] --> sink["Atomic Audio<br/>(smart filter)"]
-    sink --> speakers["Built-in speakers<br/>and headphone jack"]
+    sink --> speakers["The output in use<br/>(speakers, headphones,<br/>Bluetooth, HDMI, USB)"]
     engine["atomicaudio engine<br/>(systemd user service)"] -. "hosts, sets controls" .-> sink
     ui["Window · TUI · CLI"] -- "settings.json" --> engine
 ```
@@ -208,11 +231,12 @@ flowchart LR
 - The DSP is a LADSPA plugin in `dsp/`: plain C++ with no allocation in the
   audio thread.
 - `atomicaudio engine` hosts it in PipeWire's filter-chain as a WirePlumber
-  smart filter targeting the built-in speakers. WirePlumber routes the
-  speakers' streams through it, and the default device stays the same.
+  smart filter targeting the default output. WirePlumber routes that
+  output's streams through it, and the default device stays the same.
 - The engine applies setting changes live through `pw-cli`. It follows the
-  headphone jack and the volume through `pactl subscribe`, and restarts the
-  filter if it ever stops.
+  default output, the headphone jack and the volume through `pactl
+  subscribe`. When the default output changes, it moves the filter in front
+  of the new one, and it restarts the filter if it ever stops.
 - The window, the TUI and the CLI only edit
   `~/.config/atomicaudio/settings.json`; the engine picks changes up within
   milliseconds.
@@ -231,7 +255,7 @@ flowchart LR
 | Virtual bass | Everything under 120 Hz is normalized by a peak-hold envelope and run through Chebyshev polynomials for clean 2nd–4th harmonics, kept to 100–480 Hz |
 | Volume contour | Bass and treble shelves that grow as the output volume drops below −10 dB (ISO 226), scaled by the bass amount |
 | Dialogue | Presence boost and low-mid cut on the mid (center) signal only |
-| Surround | Side signal widened above 300 Hz, decorrelated ambience, and crosstalk cancellation on speakers or crossfeed on headphones |
+| Surround | Side signal widened above 300 Hz, decorrelated ambience, and crosstalk cancellation on laptop speakers or crossfeed on headphones |
 | Loudness | Linkwitz-Riley split at 200 Hz and 3 kHz, a soft-knee compressor per band, phase-matched so the bands sum flat |
 | Limiter | 2 ms lookahead, hold-min plus box filter, with a 4× oversampled true-peak detector so peaks between samples are caught too |
 
@@ -257,9 +281,13 @@ flowchart LR
 ## Troubleshooting
 
 **Nothing changes when I turn it on.** Check the window for a yellow banner,
-or run `atomicaudio status`. Atomic Audio processes only the built-in
-speakers and headphone jack. Sound going to Bluetooth, HDMI or USB passes
-through untouched.
+or run `atomicaudio status`. Atomic Audio processes the default output, so
+an app sending sound to a different output on purpose passes through
+untouched, and so does a virtual output like Easy Effects' sink.
+
+**My Bluetooth speaker gets the headphone settings.** The speaker doesn't
+report what kind of device it is, so it's taken for headphones, which most
+Bluetooth audio is. Its sound then comes from the Headphones settings.
 
 **It says "Starting…" for a long time.** Look at the engine's log:
 `journalctl --user -u atomicaudio -e`.

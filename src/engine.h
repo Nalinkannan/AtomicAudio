@@ -10,8 +10,9 @@
 
 // `atomicaudio engine`, run by the systemd user service. It hosts the
 // filter-chain in a child `pipewire -c` process, applies settings changes
-// live through pw-cli, switches between the speaker and headphone profiles
-// when the jack is used, and feeds the output volume to the loudness contour.
+// live through pw-cli, follows the output in use (the laptop's speakers,
+// the headphone jack, Bluetooth, HDMI, USB) with that output's settings, and
+// feeds the output volume to the loudness contour.
 class Engine : public QObject {
     Q_OBJECT
 

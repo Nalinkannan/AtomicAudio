@@ -1,5 +1,7 @@
 #pragma once
 
+#include "settings.h"
+
 #include <QByteArray>
 #include <QJsonObject>
 #include <QObject>
@@ -22,20 +24,22 @@ QString pluginPath();
 // overrides it for tests.
 QString productName();
 
-// The laptop's own output: the sink that has a speaker port, whether it is
-// playing through its headphone jack, its volume, and which sink the system
-// is actually sending sound to.
+// The output Atomic Audio processes: the sound device the system plays on
+// (the default sink), or the laptop's own speakers while the default is
+// something it can't sit in front of, like another app's virtual sink. Also
+// its volume, and which sink the system is actually sending sound to.
 struct OutputState {
     bool found = false;
     QString sink;
     QString description;
-    bool headphones = false;
+    OutputKind kind = OutputKind::Speakers;
     double volumeDb = 0;
     bool muted = false;
     QString defaultSink;
     QString defaultDescription;
 
-    // Sound goes somewhere Atomic Audio doesn't process (Bluetooth, HDMI...).
+    bool headphones() const { return kind == OutputKind::Headphones; }
+    // Sound goes somewhere Atomic Audio doesn't process (a virtual sink).
     bool elsewhere() const { return found && !defaultSink.isEmpty() && defaultSink != sink; }
 };
 

@@ -20,7 +20,7 @@ Rectangle {
         ["↑ ↓", qsTr("Pick an effect")],
         ["← →", qsTr("Turn the effect down or up")],
         ["O", qsTr("Speaker optimizer on or off")],
-        ["H", qsTr("Edit speakers or headphones")],
+        ["H", qsTr("Edit speakers, headphones or external speakers")],
         ["R", qsTr("Reset this output to the defaults")],
         ["Ctrl+Z", qsTr("Undo")],
         ["Ctrl+Shift+Z", qsTr("Redo")],
